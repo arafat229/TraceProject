@@ -1,0 +1,74 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>HlkHelpers</name>
+    </assembly>
+    <members>
+        <member name="T:HlkHelpers.CallResult`1">
+            <summary>
+            mostly , this will be use for resolvers and functions whose Data return type must be specified
+            </summary>
+            <typeparam Name="T"></typeparam>
+        </member>
+        <member name="T:HlkHelpers.CallResult">
+            <summary>
+            mostly , this will be use for controllers and functions whose Data return type can be anything
+            </summary>
+        </member>
+        <member name="M:HlkHelpers.Utils.GetCardType(System.String)">
+            <summary>
+            getCardType()
+            </summary>
+            <returns>Matches a object reference to regex to bring back a card type, the validity of the card, or a default (Unknown)</returns>
+        </member>
+        <member name="M:HlkHelpers.PagedList`1.CreateAsync(System.Linq.IQueryable{`0},System.Int32,System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            Creates a paginated list asynchronously from the specified queryable data source.
+            </summary>
+            <remarks>This method executes the query asynchronously to retrieve the total item count and the items
+            for the specified page. It is optimized for use with LINQ providers that support asynchronous operations, such
+            as Entity Framework.</remarks>
+            <param name="source">The queryable data source to paginate. This is typically a database query.</param>
+            <param name="pageNumber">The 1-based page number to retrieve. Must be greater than or equal to 1.</param>
+            <param name="pageSize">The number of items per page. Must be greater than 0.</param>
+            <param name="cancellation">An optional <see cref="T:System.Threading.CancellationToken"/> to observe while waiting for the operation to complete.</param>
+            <returns>A <see cref="T:HlkHelpers.PagedList`1"/> containing the items for the specified page, the total item count, and pagination
+            metadata.</returns>
+        </member>
+        <member name="M:HlkHelpers.PagedList`1.CreateAsync(System.Linq.IQueryable{`0},HlkHelpers.PaginationDto,System.Linq.Expressions.Expression{System.Func{`0,System.Boolean}},System.Linq.Expressions.Expression{System.Func{`0,System.Object}},System.Threading.CancellationToken)">
+            <summary>
+            Creates a paginated list of items from the specified data source, applying optional filtering, sorting, and
+            pagination parameters.
+            </summary>
+            <remarks>The method applies the specified filtering and sorting expressions, if provided, before
+            performing pagination.  The <paramref name="dto"/> parameter determines the page number, page size, and sort
+            order (ascending or descending).</remarks>
+            <param name="source">The data source to query, represented as an <see cref="T:System.Linq.IQueryable`1"/>.</param>
+            <param name="dto">An object containing pagination and sorting parameters, such as page number, page size, and sort order.</param>
+            <param name="whereClause">An optional filter expression to apply to the data source. If null, no filtering is applied.</param>
+            <param name="orderBy">An optional sorting expression to determine the order of the results. If null, no specific ordering is applied.</param>
+            <param name="cancellation">A <see cref="T:System.Threading.CancellationToken"/> to observe while waiting for the task to complete.</param>
+            <returns>A task that represents the asynchronous operation. The task result contains a <see cref="T:HlkHelpers.PagedList`1"/> 
+            containing the paginated items from the data source.</returns>
+        </member>
+        <member name="M:HlkHelpers.PagedList`1.CreateAsync``1(System.Linq.IQueryable{`0},HlkHelpers.PaginationDto,System.Linq.Expressions.Expression{System.Func{`0,``0}},System.Linq.Expressions.Expression{System.Func{`0,System.Boolean}},System.Linq.Expressions.Expression{System.Func{`0,System.Object}},System.Threading.CancellationToken)">
+            <summary>
+            Creates a paginated list of items from the specified data source based on the provided pagination and query
+            parameters.
+            </summary>
+            <remarks>This method supports filtering, sorting, and pagination of the data source. The filtering is
+            applied using the <paramref name="whereClause"/> expression, and sorting is determined by the <paramref
+            name="orderBy"/> expression and the sort order specified in <paramref name="dto"/>. If no filtering or sorting
+            expressions are provided, the method returns the paginated data as-is.</remarks>
+            <typeparam name="U">The type of the projected result after applying the selector.</typeparam>
+            <param name="source">The data source to query, represented as an <see cref="T:System.Linq.IQueryable`1"/>.</param>
+            <param name="dto">The pagination and sorting parameters, including page number, page size, and sort order.</param>
+            <param name="selector">An expression that defines the projection of the data source into the result type <typeparamref name="U"/>.</param>
+            <param name="whereClause">An optional filter expression to apply to the data source. If <see langword="null"/>, no filtering is applied.</param>
+            <param name="orderBy">An optional expression that specifies the property to sort by. If <see langword="null"/>, no sorting is applied.</param>
+            <param name="cancellation">A <see cref="T:System.Threading.CancellationToken"/> to observe while waiting for the asynchronous operation to complete.</param>
+            <returns>A <see cref="T:HlkHelpers.PagedList`1"/> containing the paginated and projected items, along with metadata such as total item
+            count, current page number, and page size.</returns>
+        </member>
+    </members>
+</doc>
