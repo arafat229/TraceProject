@@ -1,6 +1,4 @@
-﻿using Npgsql.PostgresTypes;
-
-namespace TraceProject.Model
+﻿namespace TraceProject.Model
 {
     public class UnknownFace
     {

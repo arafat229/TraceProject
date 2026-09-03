@@ -1,9 +1,7 @@
-﻿using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Identity;
+﻿using HlkHelpers;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Net;
 using System.Security.Claims;
 using TraceProject.Data;
 using TraceProject.Dto;
@@ -14,245 +12,184 @@ namespace TraceProject.Controllers;
  
 [Route("api/[controller]")]
 [ApiController]
+[Authorize]
 public class AccountController : ControllerBase
 {
     private readonly ApplicationDbContext dbContext;
-    private readonly UserManager<User> userManager;
-    private readonly RoleManager<Role> roleManager;
-    private readonly SignInManager<User> signInManager;
-    private readonly ILogger<AccountController> log;
+    private readonly BasicUserManager<User> userManager;
+    private readonly ILogger<AccountController> logger;
     private readonly IConfiguration config;
 
 
-    public AccountController(ApplicationDbContext dbContext, UserManager<User> userManager, RoleManager<Role> roleManager, SignInManager<User> signInManager, ILogger<AccountController> log, IConfiguration config)
+    public AccountController(ApplicationDbContext dbContext, BasicUserManager<User> userManager, ILogger<AccountController> logger, IConfiguration config)
     {
         this.dbContext = dbContext;
         this.userManager = userManager;
-        this.roleManager = roleManager;
-        this.signInManager = signInManager;
-        this.log = log;
+        this.logger = logger;
         this.config = config;
     }
 
 
-     [HttpPost("users")]
-     [Authorize("AdminOrManager")]
-     public async Task<IActionResult> Register(UserRegisterDto dto, CancellationToken ct)
-     {
-         try
-         {
-             dto.FullName = dto.FullName.Trim();
-             dto.PhoneNumber = dto.PhoneNumber.Trim();
-             dto.Email = dto.Email.Trim();
-             dto.Password = dto.Password;
-             dto.Role = dto.Role.Trim().ToTitleCase();
-
-
-             var existingUser = await userManager.FindByEmailAsync(dto.Email);
-
-             if (existingUser is not null)
-                 return BadRequest(CallResult.Error("Account already exists "));
-
-
-             var result = await roleManager.FindByNameAsync(dto.Role);
-
-             if (result is null)
-                 return NotFound(CallResult.Error("Role not found"));
-
-
-             var userToCreate = new User()
-             {
-                 FullName = dto.FullName,
-                 UserName = dto.UserName,
-                 Email = dto.Email,
-                 PhoneNumber = dto.PhoneNumber,
-                 CreatedAt = DateTime.Now.ToUniversalTime(),
-                 UpdatedAt = DateTime.Now.ToUniversalTime(),
-                 IsActive = true
-
-             };
-
-             var res = await userManager.CreateAsync(userToCreate, dto.Password);
-
-
-             if (!res.Succeeded)
-                 return BadRequest(CallResult.Error("Failed to create the user", res.Errors.Select(x => x.Description)));
-
-
-             var createdUser =  await dbContext.Users.FirstOrDefaultAsync(x => x.PhoneNumber == dto.PhoneNumber);
-
-
-             var roleResult = await userManager.AddToRoleAsync(createdUser, dto.Role);
-
-
-             if (!roleResult.Succeeded)
-             {
-                 return BadRequest(CallResult.Error("Fail to assign a role to the user", roleResult.Errors.Select(x => x.Description)));
-             }
-
-             await dbContext.SaveChangesAsync();
-
-             return Ok(CallResult.Ok($"user {createdUser.FullName} account is created successfully"));
-
-         }
-         catch (Exception ex)
-         {
-             //Console.WriteLine(ex.StackTrace);
-             log.LogError(ex, "{action} failed : {error}", nameof(Register), ex.GetFullErrorMessage());
-             return BadRequest(CallResult.Error(ex));
-         }
-
-
-     }
-
-     
-
-
-
-    [HttpPost("login")]
-    public async Task<IActionResult> Login(UserLoginDto dto)
+    [HttpPost("users/new")]
+    public async Task<IActionResult> AddUser(AddUserDto dto, CancellationToken cancellation)
     {
         try
         {
-            var existingUser = dbContext.Users.FirstOrDefault(x => x.Email == dto.Email);
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Email == dto.Email, cancellation);
 
-            if (existingUser is null)
-                return NotFound(CallResult.Error("Invalid Credentials"));
+            if (user is not null) return BadRequest(CallResult.Error("Account already exists"));
 
-            if (existingUser is { IsActive: false })
-                return Unauthorized(CallResult.Error("User is not active"));
-
-
-            var result = await signInManager.CheckPasswordSignInAsync(existingUser, dto.Password, true);
-
-            if (!result.Succeeded)
+            user = new() 
             {
-                return Unauthorized(CallResult.Error("Invalid email or password"));
-            }
-
-            List<Claim> claims = new List<Claim>{
-                new Claim(ClaimTypes.NameIdentifier, existingUser.Id.ToString()),
-                new Claim (ClaimTypes.Name, existingUser.FullName),
-                new Claim(ClaimTypes.Email, existingUser.Email??""),
-                new Claim(ClaimTypes.MobilePhone, existingUser.PhoneNumber??"")
-
+                Email = dto.Email,
+                FullName = dto.FullName,
+                Role = dto.Role,
+                Code = Utils.GenerateDigitNumbers(5) ,// temp pass code for user to login
+                CodeExpiry = DateTime.UtcNow.AddHours(1)
             };
 
-            var roles = await userManager.GetRolesAsync(existingUser);
-            var role = "";
+            userManager.SetUserPassword(ref user, user.Code);
 
+            dbContext.Add(user);
 
-            if (roles.Count >= 1)
-            {
-
-                role = roles[0];
-                var existingRole = await roleManager.FindByNameAsync(role);
-
-                if (existingRole is not null)
-                {
-                    claims.Add(new Claim(ClaimTypes.Role, role));
-                    claims.AddRange(await roleManager.GetClaimsAsync(existingRole));
-                }
-            }
-
-            List<string> roleClaims = new();
-
-            foreach (var claim in claims)
-            {
-                //if(claim.Type == Constants.Privilege && claim.Value != null) {
-                //  roleClaims.Add(claim.Value);
-
-                //};
-
-                if (claim is { Type: Constants.Privilege, Value: not null })
-                {
-                    roleClaims.Add(claim.Value);
-                }
-            };
-            var userObj = new UserDetailsDto
-            {
-                Id = existingUser.Id,
-                FullName = existingUser.FullName,
-                Email = existingUser.Email,
-                PhoneNumber = existingUser.PhoneNumber,
-                Role = role,
-                Permission = roleClaims,
-                IsActive = existingUser.IsActive,
-                CreatedAt = existingUser.CreatedAt,
-            };
-
-
-            var data = new
-            {
-                User = userObj,
-                Token = Helpers.Utilities.GenerateJwtToken(config, claims, DateTime.UtcNow.AddDays(2))
-
-            };
-
-            return Ok(CallResult.Ok("Login Succesfully", data));
-
+            return Ok(CallResult.Ok($"Account created Successfully with user pass code: {user.Code}"));
 
         }
         catch (Exception ex)
         {
-
-            log.LogError(ex, "{action} failed: {error}", nameof(Login), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(AddUser), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
-
     }
 
-    [Authorize("AdminOnly")]
-    [HttpPost("roles")]
-    public async Task<IActionResult> CreateRole(RoleDto dto)
+
+    [HttpPost("users/set-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SetPasswordUser(SetUserPasswordDto dto, CancellationToken cancellation)
     {
         try
         {
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Email == dto.Email, cancellation);
 
-            dto.Name = dto.Name.Trim().ToTitleCase();
+            if (user is null) return NotFound(CallResult.Error("Account not found"));
 
+            if (string.IsNullOrWhiteSpace(user.Code)) return BadRequest(CallResult.Error("Password is already set"));
 
-            var existingRole = await dbContext.Roles.FirstOrDefaultAsync(x => x.Name == dto.Name);
+            if (user.CodeExpiry < DateTime.UtcNow) return BadRequest(CallResult.Error("Password code has expired"));
 
-            if (existingRole is not null)
-                return BadRequest(CallResult.Error("Role already exists", HttpStatusCode.BadRequest));
+            user.Code = "";
+            user.CodeExpiry = null;
+            user.UpdatedAt = DateTime.UtcNow;
 
+            userManager.SetUserPassword(ref user, dto.Password);
 
-            var role = new Role { Name = dto.Name.Trim().ToTitleCase(), NormalizedName = dto.Name.Trim().ToUpper() };
+            dbContext.Update(user);
 
-            var res = await roleManager.CreateAsync(role);
+            return Ok(CallResult.Ok("Password updated successfully"));
 
-            if (res.Succeeded)
-            {
-
-                    foreach (var claim in dto.Claims.Distinct())
-                    {
-                        await roleManager.AddClaimAsync(role, new Claim(Constants.Privilege, claim));
-                        await dbContext.Roles.AddAsync(role);
-
-
-                    if (await dbContext.SaveChangesAsync() <= 0)
-                        return BadRequest(CallResult.Error("Failed to save role"));
-                    
-
-                }
-                return CreatedAtAction(nameof(CreateRole), new { id = role.Id }, CallResult.Ok("Role created successfully", role));
-
-            }
-            else
-            {
-                return BadRequest(CallResult.Error("Failed to create role", res.Errors.Select(e => e.Description)));
-            }
-               
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "{action} failed: {error}", nameof(CreateRole), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(SetPasswordUser), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
-     
     }
+
+
+    [HttpPost("users/login")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Login(LoginUserDto dto, CancellationToken cancellation)
+    {
+        try
+        {
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Email == dto.Email, cancellation);
+
+            if (user is null) return NotFound(CallResult.Error("Account not found"));
+
+            if (!string.IsNullOrWhiteSpace(user.Code)) return BadRequest(CallResult.Error("Password is not set"));
+
+            var isGood = userManager.CheckPassword(user, dto.Password);
+
+            if(!isGood) return BadRequest(CallResult.Error("Invalid credentials"));
+
+            if (!user.IsActive)
+                return BadRequest(CallResult.Error("Account is DEACTIVATED, kindly contact admin for assistance"));
+
+            var claims = new List<Claim>()
+            {
+                  new (ClaimTypes.NameIdentifier, user.Id.ToString()),
+                  new (ClaimTypes.Role, user.Role),
+            };
+
+            var res = new
+            {
+                user = new { user.Id, user.Email, user.FullName, user.Role },
+                token = Utils.GenerateJwtToken(config, claims, DateTime.UtcNow.AddHours(1))
+            };
+
+            return Ok(CallResult.Ok("Login successful", res));
+
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(SetPasswordUser), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpPost("users/activate")]
+    public async Task<IActionResult> ActivateUser(UserActivation dto, CancellationToken cancellation)
+    {
+        try
+        {
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == dto.userId, cancellation);
+
+            if (user is null) return NotFound(CallResult.Error("Account not found"));
+
+            user.IsActive = dto.activate;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            dbContext.Update(user);
+
+            await dbContext.SaveChangesAsync(cancellation);
+
+            return Ok(CallResult.Ok($"User {(user.IsActive ? "activated" : "deactivated")} successfully"));
+
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(SetPasswordUser), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpGet("users")]
+    public async Task<IActionResult> GetUser([FromQuery] PaginationDto? dto, CancellationToken cancellation)
+    {
+        try
+        {
+            dto ??= new PaginationDto();
+
+            var query = (dto.Query ?? "").Trim().ToLower();
+
+            var source = dbContext.Users.AsNoTracking();
+
+            var list = await PagedList<User>.CreateAsync(source, dto,
+                orderBy: x => x.FullName,
+                selector: u => new { u.Id, u.Email, u.FullName, u.Role, u.IsActive, u.CreatedAt, u.UpdatedAt },
+                whereClause: x => x.Email.ToLower().Contains(query) || x.FullName.ToLower().Contains(query),
+               cancellation: cancellation);
+
+            return Ok(CallResult.Ok(data: list));
+
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(SetPasswordUser), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
 
 }
 
- 
