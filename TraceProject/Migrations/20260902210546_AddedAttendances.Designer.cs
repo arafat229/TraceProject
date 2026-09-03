@@ -20,7 +20,7 @@ namespace TraceProject.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.11");
 
-            modelBuilder.Entity("TraceProject.Model.Attendance", b =>
+            modelBuilder.Entity("TraceProject.Models.Attendance", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -53,7 +53,7 @@ namespace TraceProject.Migrations
                     b.ToTable("Attendances");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Department", b =>
+            modelBuilder.Entity("TraceProject.Models.Department", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -68,7 +68,7 @@ namespace TraceProject.Migrations
                     b.ToTable("Department");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Employee", b =>
+            modelBuilder.Entity("TraceProject.Models.Employee", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -99,7 +99,7 @@ namespace TraceProject.Migrations
                     b.ToTable("Employees");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.EmployeeAccess", b =>
+            modelBuilder.Entity("TraceProject.Models.EmployeeAccess", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -123,7 +123,7 @@ namespace TraceProject.Migrations
                     b.ToTable("EmployeeAccess");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Location", b =>
+            modelBuilder.Entity("TraceProject.Models.Location", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -138,7 +138,7 @@ namespace TraceProject.Migrations
                     b.ToTable("Location");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.UnknownFace", b =>
+            modelBuilder.Entity("TraceProject.Models.UnknownFace", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -152,7 +152,7 @@ namespace TraceProject.Migrations
                     b.ToTable("UnkownFaces");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.UnknownFaceLocation", b =>
+            modelBuilder.Entity("TraceProject.Models.UnknownFaceLocation", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -173,7 +173,7 @@ namespace TraceProject.Migrations
                     b.ToTable("UnknownFaceLocation");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.User", b =>
+            modelBuilder.Entity("TraceProject.Models.User", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
@@ -216,15 +216,15 @@ namespace TraceProject.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Attendance", b =>
+            modelBuilder.Entity("TraceProject.Models.Attendance", b =>
                 {
-                    b.HasOne("TraceProject.Model.Employee", "Employee")
+                    b.HasOne("TraceProject.Models.Employee", "Employee")
                         .WithMany("Attendances")
                         .HasForeignKey("EmployeeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("TraceProject.Model.Location", "Location")
+                    b.HasOne("TraceProject.Models.Location", "Location")
                         .WithMany()
                         .HasForeignKey("LocationId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -235,9 +235,9 @@ namespace TraceProject.Migrations
                     b.Navigation("Location");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Employee", b =>
+            modelBuilder.Entity("TraceProject.Models.Employee", b =>
                 {
-                    b.HasOne("TraceProject.Model.Department", "Department")
+                    b.HasOne("TraceProject.Models.Department", "Department")
                         .WithMany("Employees")
                         .HasForeignKey("DepartmentId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -246,15 +246,15 @@ namespace TraceProject.Migrations
                     b.Navigation("Department");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.EmployeeAccess", b =>
+            modelBuilder.Entity("TraceProject.Models.EmployeeAccess", b =>
                 {
-                    b.HasOne("TraceProject.Model.Employee", "Employee")
+                    b.HasOne("TraceProject.Models.Employee", "Employee")
                         .WithMany("EmployeeLocations")
                         .HasForeignKey("EmployeeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("TraceProject.Model.Location", "Location")
+                    b.HasOne("TraceProject.Models.Location", "Location")
                         .WithMany()
                         .HasForeignKey("LocationId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -265,15 +265,15 @@ namespace TraceProject.Migrations
                     b.Navigation("Location");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.UnknownFaceLocation", b =>
+            modelBuilder.Entity("TraceProject.Models.UnknownFaceLocation", b =>
                 {
-                    b.HasOne("TraceProject.Model.Location", "Location")
+                    b.HasOne("TraceProject.Models.Location", "Location")
                         .WithMany()
                         .HasForeignKey("LocationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("TraceProject.Model.UnknownFace", "UnknownFace")
+                    b.HasOne("TraceProject.Models.UnknownFace", "UnknownFace")
                         .WithMany("UnknownFaceLocations")
                         .HasForeignKey("UnknownFaceId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -284,19 +284,19 @@ namespace TraceProject.Migrations
                     b.Navigation("UnknownFace");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Department", b =>
+            modelBuilder.Entity("TraceProject.Models.Department", b =>
                 {
                     b.Navigation("Employees");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.Employee", b =>
+            modelBuilder.Entity("TraceProject.Models.Employee", b =>
                 {
                     b.Navigation("Attendances");
 
                     b.Navigation("EmployeeLocations");
                 });
 
-            modelBuilder.Entity("TraceProject.Model.UnknownFace", b =>
+            modelBuilder.Entity("TraceProject.Models.UnknownFace", b =>
                 {
                     b.Navigation("UnknownFaceLocations");
                 });

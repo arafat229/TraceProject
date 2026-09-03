@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using HlkHelpers;
 using Microsoft.EntityFrameworkCore;
 
-namespace TraceProject.Model;
+namespace TraceProject.Models;
 
 
 [Index(nameof(Email), IsUnique = true)]

@@ -6,7 +6,7 @@ using System.Security.Claims;
 using TraceProject.Data;
 using TraceProject.Dto;
 using TraceProject.Helpers;
-using TraceProject.Model;
+using TraceProject.Models;
 
 namespace TraceProject.Controllers;
 

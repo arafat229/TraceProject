@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 
-namespace TraceProject.Model;
+namespace TraceProject.Models;
 
 [Index(nameof(EmployeeId), IsUnique = true)]
 public class FaceProfil

@@ -1,6 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 
-namespace TraceProject.Model;
+namespace TraceProject.Models;
 
 [Index(nameof(EmployeeId), IsUnique = true)]
     public class Activity

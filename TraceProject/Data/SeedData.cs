@@ -1,5 +1,5 @@
 ﻿using HlkHelpers;
-using TraceProject.Model;
+using TraceProject.Models;
 
 namespace TraceProject.Data;
 
