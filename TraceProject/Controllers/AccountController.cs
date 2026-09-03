@@ -11,7 +11,7 @@ using TraceProject.Helpers;
 using TraceProject.Model;
 
 namespace TraceProject.Controllers;
-
+ 
 [Route("api/[controller]")]
 [ApiController]
 public class AccountController : ControllerBase
