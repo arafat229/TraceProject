@@ -39,4 +39,10 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="libs\HlkHelpers.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

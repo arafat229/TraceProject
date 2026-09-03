@@ -1,17 +1,19 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
+﻿using HlkHelpers;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace TraceProject.Model;
-    public class Employee
+    public class Employee : Auditable
     {
-        public long Id { get; set; }
         public long DepartmentId { get; set; }
         public Department Department { get; set; } = null!;
         public string FullName { get; set; } = null!;
         public List<Attendance> Attendances { get; set; } = [];
         public List<EmployeeAccess> EmployeeLocations { get; set; } = [];  
+        public string Email { get; set; } = null!;
+        public string PhoneNumber { get; set; } = null!; 
         public string EmployeeNumber { get; set; } = null!;
         public string Position { get; set; } = null!;
-        public bool IsActive { get; set; } 
+        public bool IsActive { get; set; } = true;
 
     }
 
@@ -31,9 +33,8 @@ namespace TraceProject.Model;
 
     }
 
-public class EmployeeAccess
+public class EmployeeAccess : Auditable
 {
-    public long Id { get; set; }
     public DateTime AddedOn { get; set; }
     public Employee Employee { get; set; } = null!;
     public long EmployeeId { get; set; }

@@ -12,7 +12,8 @@ public class User : BasicUser
     public string Email { get; set; } = null!;
     public string FullName { get; set; } = null!;
     public string Role { get; set; } = null!;
-    //public string Code { get; set; } = "";
+    public string Code { get; set; } = "";
+    public DateTime? CodeExpiry { get; set; } 
     public bool IsActive { get; set; } = true;
 
 }
