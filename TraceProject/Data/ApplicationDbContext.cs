@@ -1,6 +1,6 @@
 ﻿
 using Microsoft.EntityFrameworkCore;
-using TraceProject.Model;
+using TraceProject.Models;
 using static Microsoft.EntityFrameworkCore.DbLoggerCategory.Database;
 
 namespace TraceProject.Data;
@@ -15,6 +15,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<UnknownFace> UnkownFaces { get; set; } = null!;
     public DbSet<User> Users { get; set; } = null!;
     public DbSet<Employee> Employees { get; set; } = null!;
+    public DbSet<Department> Departments { get; set; } = null!; 
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

@@ -20,7 +20,7 @@ namespace TraceProject.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.11");
 
-            modelBuilder.Entity("TraceProject.Model.User", b =>
+            modelBuilder.Entity("TraceProject.Models.User", b =>
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()

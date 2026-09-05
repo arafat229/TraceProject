@@ -1,6 +1,6 @@
 ﻿using System.Security.Cryptography.X509Certificates;
 
-namespace TraceProject.Model
+namespace TraceProject.Models
 {
     public class Report
     {

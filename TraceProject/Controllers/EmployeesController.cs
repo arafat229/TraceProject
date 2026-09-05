@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using TraceProject.Data;
 using TraceProject.Dto;
 using TraceProject.Dtos;
-using TraceProject.Model;
+using TraceProject.Models;
 
 namespace TraceProject.Controllers;
 

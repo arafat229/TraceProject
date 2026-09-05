@@ -1,4 +1,4 @@
-﻿namespace TraceProject.Model
+﻿namespace TraceProject.Models
 {
     public class UnknownFace
     {

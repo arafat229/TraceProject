@@ -1,7 +1,7 @@
 ﻿using HlkHelpers;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace TraceProject.Model;
+namespace TraceProject.Models;
     public class Employee : Auditable
     {
         public long DepartmentId { get; set; }
@@ -23,9 +23,9 @@ namespace TraceProject.Model;
     public long EmployeeId { get; set; }
     public long Id { get; set; }
     public DateTime CheckIn { get; set; }
-    public DateTime CheckOut { get; set; }
+    public DateTime? CheckOut { get; set; }
     [NotMapped]
-    public TimeSpan Duration => CheckOut - CheckIn;
+    public TimeSpan Duration => CheckOut.Value - CheckIn;
     public double Confidence { get; set; }
     public bool IsAllowed { get; set; }
     public long LocationId { get; set; }
@@ -35,7 +35,6 @@ namespace TraceProject.Model;
 
 public class EmployeeAccess : Auditable
 {
-    public DateTime AddedOn { get; set; }
     public Employee Employee { get; set; } = null!;
     public long EmployeeId { get; set; }
     public long LocationId { get; set; }

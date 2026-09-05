@@ -8,7 +8,7 @@ using Microsoft.OpenApi;
 using Serilog;
 using System.IdentityModel.Tokens.Jwt;
 using TraceProject.Data;
-using TraceProject.Model;
+using TraceProject.Models;
 
 
 try
