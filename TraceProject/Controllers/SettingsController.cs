@@ -8,7 +8,7 @@ using TraceProject.Services;
 namespace TraceProject.Controllers;
 
 /// <summary>
-/// System-wide settings (recognition threshold, working hours, attendance update interval).
+/// System-wide settings (recognition threshold, working hours).
 /// Changes apply immediately to the live pipeline.
 /// </summary>
 [Route("api/[controller]")]
@@ -29,7 +29,7 @@ public class SettingsController : ControllerBase
     public IActionResult GetSettings()
     {
         var s = settings.Current;
-        return Ok(CallResult.Ok(data: new SystemSettingsDto(s.RecognitionThreshold, s.WorkStartTime, s.WorkEndTime, s.LateGraceMinutes, s.AttendanceUpdateIntervalMinutes)));
+        return Ok(CallResult.Ok(data: new SystemSettingsDto(s.RecognitionThreshold, s.WorkStartTime, s.WorkEndTime, s.LateGraceMinutes)));
     }
 
     [HttpPut]
@@ -41,10 +41,10 @@ public class SettingsController : ControllerBase
                 return BadRequest(CallResult.Error("Recognition threshold must be between 0.20 and 0.90"));
             if (!IsTime(dto.WorkStartTime) || !IsTime(dto.WorkEndTime))
                 return BadRequest(CallResult.Error("Working hours must be in HH:mm format"));
+            if (string.CompareOrdinal(dto.WorkEndTime, dto.WorkStartTime) <= 0)
+                return BadRequest(CallResult.Error("The end time must be after the start time"));
             if (dto.LateGraceMinutes is < 0 or > 240)
                 return BadRequest(CallResult.Error("Grace period must be between 0 and 240 minutes"));
-            if (dto.AttendanceUpdateIntervalMinutes is < 0 or > 120)
-                return BadRequest(CallResult.Error("Attendance update interval must be between 0 and 120 minutes"));
 
             var updated = await settings.UpdateAsync(s =>
             {
@@ -52,10 +52,9 @@ public class SettingsController : ControllerBase
                 s.WorkStartTime = dto.WorkStartTime;
                 s.WorkEndTime = dto.WorkEndTime;
                 s.LateGraceMinutes = dto.LateGraceMinutes;
-                s.AttendanceUpdateIntervalMinutes = dto.AttendanceUpdateIntervalMinutes;
             }, cancellation);
 
-            return Ok(CallResult.Ok("Settings saved", new SystemSettingsDto(updated.RecognitionThreshold, updated.WorkStartTime, updated.WorkEndTime, updated.LateGraceMinutes, updated.AttendanceUpdateIntervalMinutes)));
+            return Ok(CallResult.Ok("Settings saved", new SystemSettingsDto(updated.RecognitionThreshold, updated.WorkStartTime, updated.WorkEndTime, updated.LateGraceMinutes)));
         }
         catch (Exception ex)
         {

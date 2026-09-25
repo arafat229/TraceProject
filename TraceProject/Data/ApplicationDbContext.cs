@@ -48,6 +48,9 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             attendance.HasIndex(x => new { x.EmployeeId, x.CheckIn });
             attendance.HasIndex(x => new { x.CameraId, x.CheckIn });
             attendance.HasIndex(x => x.CheckIn);
+
+            // One check-in per employee per day
+            attendance.HasIndex(x => new { x.EmployeeId, x.WorkDate }).IsUnique();
         });
 
         builder.Entity<EmployeeAccess>(employeeAccess =>

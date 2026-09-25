@@ -7,6 +7,7 @@ using TraceProject.Data;
 using TraceProject.Dtos;
 using TraceProject.Hubs;
 using TraceProject.Models;
+using TraceProject.Services;
 
 namespace TraceProject.Controllers;
 
@@ -34,20 +35,27 @@ public class AttendancesController : ControllerBase
             var employee = await dbContext.Employees.AsNoTracking()
                 .FirstOrDefaultAsync(e => e.Id == dto.EmployeeId, cancellation);
 
-            if (employee is null) 
+            if (employee is null)
                 return BadRequest(CallResult.Error("Employee not found"));
 
             var location = await dbContext.Locations.AsNoTracking()
                 .FirstOrDefaultAsync(l => l.Id == dto.LocationId, cancellation);
 
-            if (location is null) 
+            if (location is null)
                 return BadRequest(CallResult.Error("Location not found"));
+
+            // One check-in per employee per day
+            var checkInUtc = dto.CheckIn.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dto.CheckIn, DateTimeKind.Utc) : dto.CheckIn.ToUniversalTime();
+            var workDate = WorkDay.Of(checkInUtc);
+            if (await dbContext.Attendances.AnyAsync(a => a.EmployeeId == dto.EmployeeId && a.WorkDate == workDate, cancellation))
+                return BadRequest(CallResult.Error($"{employee.FullName} already has a check-in on {workDate:yyyy-MM-dd}"));
 
             var attendance = new Attendance
             {
                 EmployeeId = dto.EmployeeId,
                 LocationId = dto.LocationId,
-                CheckIn = dto.CheckIn,
+                WorkDate = workDate,
+                CheckIn = checkInUtc,
                 Confidence = dto.Confidence,
                 IsAllowed = dto.IsAllowed
             };
@@ -64,14 +72,14 @@ public class AttendancesController : ControllerBase
             }, cancellation);
 
             return Ok(CallResult.Ok(data: new AttendanceDto(
-                attendance.Id, 
-                attendance.EmployeeId, 
-                employee.FullName, 
-                attendance.LocationId, 
-                location.Place, 
-                attendance.CheckIn, 
-                attendance.CheckOut, 
-                attendance.Confidence, 
+                attendance.Id,
+                attendance.EmployeeId,
+                employee.FullName,
+                attendance.LocationId,
+                location.Place,
+                attendance.CheckIn,
+                attendance.CheckOut,
+                attendance.Confidence,
                 attendance.IsAllowed)));
         }
         catch (Exception ex)
@@ -83,7 +91,7 @@ public class AttendancesController : ControllerBase
 
     [HttpGet]
     public async Task<IActionResult> GetAttendances([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10,
-        [FromQuery] DateTime? startDate = null, [FromQuery] DateTime? endDate = null, 
+        [FromQuery] DateTime? startDate = null, [FromQuery] DateTime? endDate = null,
         [FromQuery] long? employeeId = null, [FromQuery] long? locationId = null, CancellationToken cancellation = default)
     {
         try
@@ -106,16 +114,16 @@ public class AttendancesController : ControllerBase
 
             var list = await PagedList<Attendance>.CreateAsync(query, paginationDto,
                 orderBy: x => x.CheckIn,
-                selector: a => new { 
-                    a.Id, 
-                    a.EmployeeId, 
-                    EmployeeName = a.Employee.FullName, 
-                    a.LocationId, 
+                selector: a => new {
+                    a.Id,
+                    a.EmployeeId,
+                    EmployeeName = a.Employee.FullName,
+                    a.LocationId,
                     LocationName = a.Location.Place,
-                    a.CheckIn, 
-                    a.CheckOut, 
-                    a.Confidence, 
-                    a.IsAllowed 
+                    a.CheckIn,
+                    a.CheckOut,
+                    a.Confidence,
+                    a.IsAllowed
                 },
                 cancellation: cancellation);
 
@@ -139,7 +147,7 @@ public class AttendancesController : ControllerBase
                 .AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == id, cancellation);
 
-            if (attendance is null) 
+            if (attendance is null)
                 return NotFound(CallResult.Error("Attendance record not found"));
 
             var dto = new AttendanceDto(
@@ -172,7 +180,7 @@ public class AttendancesController : ControllerBase
                 .Include(a => a.Location)
                 .FirstOrDefaultAsync(a => a.Id == id, cancellation);
 
-            if (attendance is null) 
+            if (attendance is null)
                 return NotFound(CallResult.Error("Attendance record not found"));
 
             var hadCheckOut = attendance.CheckOut.HasValue;
@@ -221,7 +229,7 @@ public class AttendancesController : ControllerBase
         {
             var attendance = await dbContext.Attendances.FirstOrDefaultAsync(a => a.Id == id, cancellation);
 
-            if (attendance is null) 
+            if (attendance is null)
                 return NotFound(CallResult.Error("Attendance record not found"));
 
             dbContext.Remove(attendance);
@@ -244,7 +252,7 @@ public class AttendancesController : ControllerBase
             var employee = await dbContext.Employees.AsNoTracking()
                 .FirstOrDefaultAsync(e => e.Id == employeeId, cancellation);
 
-            if (employee is null) 
+            if (employee is null)
                 return NotFound(CallResult.Error("Employee not found"));
 
             var query = dbContext.Attendances
@@ -260,16 +268,16 @@ public class AttendancesController : ControllerBase
             var attendances = await query
                 .Include(a => a.Location)
                 .OrderByDescending(a => a.CheckIn)
-                .Select(a => new { 
-                    a.Id, 
-                    a.EmployeeId, 
-                    Employee = employee.FullName, 
-                    a.LocationId, 
+                .Select(a => new {
+                    a.Id,
+                    a.EmployeeId,
+                    Employee = employee.FullName,
+                    a.LocationId,
                     Location = a.Location.Place,
-                    a.CheckIn, 
-                    a.CheckOut, 
-                    a.Confidence, 
-                    a.IsAllowed 
+                    a.CheckIn,
+                    a.CheckOut,
+                    a.Confidence,
+                    a.IsAllowed
                 })
                 .ToListAsync(cancellation);
 
@@ -290,7 +298,7 @@ public class AttendancesController : ControllerBase
             var location = await dbContext.Locations.AsNoTracking()
                 .FirstOrDefaultAsync(l => l.Id == locationId, cancellation);
 
-            if (location is null) 
+            if (location is null)
                 return NotFound(CallResult.Error("Location not found"));
 
             var query = dbContext.Attendances
@@ -306,16 +314,16 @@ public class AttendancesController : ControllerBase
             var attendances = await query
                 .Include(a => a.Employee)
                 .OrderByDescending(a => a.CheckIn)
-                .Select(a => new { 
-                    a.Id, 
-                    a.EmployeeId, 
-                    Employee = a.Employee.FullName, 
-                    a.LocationId, 
+                .Select(a => new {
+                    a.Id,
+                    a.EmployeeId,
+                    Employee = a.Employee.FullName,
+                    a.LocationId,
                     Location = location.Place,
-                    a.CheckIn, 
-                    a.CheckOut, 
-                    a.Confidence, 
-                    a.IsAllowed 
+                    a.CheckIn,
+                    a.CheckOut,
+                    a.Confidence,
+                    a.IsAllowed
                 })
                 .ToListAsync(cancellation);
 

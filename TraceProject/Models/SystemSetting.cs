@@ -19,8 +19,5 @@ public class SystemSetting
     /// <summary>Minutes after WorkStartTime before a first check-in counts as late.</summary>
     public int LateGraceMinutes { get; set; } = 15;
 
-    /// <summary>Minimum minutes between updates of an employee's check-out (last seen) time.</summary>
-    public int AttendanceUpdateIntervalMinutes { get; set; } = 1;
-
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

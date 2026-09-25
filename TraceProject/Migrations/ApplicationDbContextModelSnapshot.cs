@@ -92,6 +92,9 @@ namespace TraceProject.Migrations
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateOnly>("WorkDate")
+                        .HasColumnType("date");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CheckIn");
@@ -101,6 +104,9 @@ namespace TraceProject.Migrations
                     b.HasIndex("CameraId", "CheckIn");
 
                     b.HasIndex("EmployeeId", "CheckIn");
+
+                    b.HasIndex("EmployeeId", "WorkDate")
+                        .IsUnique();
 
                     b.ToTable("Attendances");
                 });
@@ -416,9 +422,6 @@ namespace TraceProject.Migrations
                         .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<int>("AttendanceUpdateIntervalMinutes")
-                        .HasColumnType("integer");
 
                     b.Property<int>("LateGraceMinutes")
                         .HasColumnType("integer");
