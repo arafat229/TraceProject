@@ -81,4 +81,9 @@ public class FaceEmbedding
     /// </summary>
     [MaxLength(255)]
     public string? Source { get; set; }
+
+    /// <summary>
+    /// JPEG of the aligned 112x112 face the embedding was computed from (for display).
+    /// </summary>
+    public byte[]? FaceImage { get; set; }
 }

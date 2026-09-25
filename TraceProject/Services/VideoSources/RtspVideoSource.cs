@@ -52,6 +52,8 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
     public (int Width, int Height)? CurrentResolution { get; private set; }
     public double? CurrentFramesPerSecond { get; private set; }
     public DateTime? LastFrameTimestampUtc { get; private set; }
+    public DateTime? LastFrameChangeUtc { get; private set; }
+    private ulong lastFrameSignature;
     public Exception? LastException { get; private set; }
 
     public RtspVideoSource(
@@ -108,8 +110,9 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
         {
             if (isRunning)
             {
-                logger.LogWarning("RtspVideoSource is already running");
-                return;
+                // A reconnect after the stream dropped: throw away the old player and start fresh
+                logger.LogInformation("Restarting RTSP video source");
+                ReleasePlayer();
             }
 
             logger.LogInformation("Starting RTSP video source at {sanitizedUrl}", SanitizeUrl(rtspUrl));
@@ -256,6 +259,13 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
 
             lastCaptureUtc = now;
 
+            var signature = ComputeSignature(frame.Data);
+            if (signature != lastFrameSignature)
+            {
+                lastFrameSignature = signature;
+                LastFrameChangeUtc = now;
+            }
+
             lock (frameLock)
             {
                 latestFrame = frame;
@@ -274,6 +284,20 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
             LastException = ex;
             logger.LogError(ex, "Error in LibVLC video display callback");
         }
+    }
+
+    /// <summary>
+    /// Cheap fingerprint of a frame (FNV-1a over a sparse pixel sample) to detect a frozen picture.
+    /// </summary>
+    private static ulong ComputeSignature(byte[] data)
+    {
+        ulong hash = 14695981039346656037UL;
+        for (int i = 0; i < data.Length; i += 97)
+        {
+            hash ^= data[i];
+            hash *= 1099511628211UL;
+        }
+        return hash;
     }
 
     private void FreeFrameBuffer()
@@ -344,6 +368,43 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
     /// <summary>
     /// Stops the video source and releases resources.
     /// </summary>
+    /// <summary>
+    /// Stops and disposes the current LibVLC player without raising status events
+    /// (used before reconnecting).
+    /// </summary>
+    private void ReleasePlayer()
+    {
+        try
+        {
+            metricsLoggingTokenSource?.Cancel();
+            metricsLoggingTokenSource?.Dispose();
+            metricsLoggingTokenSource = null;
+
+            if (mediaPlayer != null)
+            {
+                mediaPlayer.Playing -= OnMediaPlayerPlaying;
+                mediaPlayer.Stopped -= OnMediaPlayerStopped;
+                mediaPlayer.EncounteredError -= OnMediaPlayerError;
+                mediaPlayer.Stop();
+                mediaPlayer.Dispose();
+                mediaPlayer = null;
+            }
+
+            media?.Dispose();
+            media = null;
+            libVlc?.Dispose();
+            libVlc = null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Error releasing the previous LibVLC player");
+        }
+        finally
+        {
+            isRunning = false;
+        }
+    }
+
     public async Task StopAsync()
     {
         try

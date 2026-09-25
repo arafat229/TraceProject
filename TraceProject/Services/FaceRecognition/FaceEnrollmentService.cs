@@ -5,24 +5,83 @@ using TraceProject.Services.Interfaces;
 namespace TraceProject.Services.FaceRecognition;
 
 /// <summary>
-/// Service for enrolling employee faces and computing embeddings.
-/// Phase 4: Non-public internal service (no controller endpoint yet).
-/// Provides methods to take face crops (from enrollment photos or detected faces) and store embeddings.
+/// Outcome of an enrollment attempt: the stored embedding, or a message saying why it failed.
+/// </summary>
+public record EnrollmentResult(FaceEmbedding? Embedding, string? Error)
+{
+    public static EnrollmentResult Failed(string error) => new(null, error);
+}
+
+/// <summary>
+/// Enrolls employee faces: detects/aligns the face, computes its SFace embedding and stores it
+/// (with a JPEG thumbnail) so the live pipeline can recognize the employee.
 /// </summary>
 public class FaceEnrollmentService
 {
     private readonly IFaceRecognizer recognizer;
+    private readonly IFaceDetector detector;
     private readonly ApplicationDbContext dbContext;
     private readonly ILogger<FaceEnrollmentService> logger;
 
     public FaceEnrollmentService(
         IFaceRecognizer recognizer,
+        IFaceDetector detector,
         ApplicationDbContext dbContext,
         ILogger<FaceEnrollmentService> logger)
     {
         this.recognizer = recognizer;
+        this.detector = detector;
         this.dbContext = dbContext;
         this.logger = logger;
+    }
+
+    /// <summary>
+    /// Detects the largest face in a frame (live camera frame or uploaded photo) and enrolls it.
+    /// </summary>
+    public async Task<EnrollmentResult> EnrollFromFrameAsync(
+        long employeeId,
+        IVideoFrame frame,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        if (!detector.IsReady)
+            return EnrollmentResult.Failed("The face detector is not ready (check the YuNet model).");
+        if (!recognizer.IsReady)
+            return EnrollmentResult.Failed("The face recognizer is not ready (check the SFace model).");
+
+        var faces = await detector.DetectFacesAsync(frame, cancellationToken);
+        if (faces.Count == 0)
+            return EnrollmentResult.Failed("No face found. Face the camera directly, with good lighting.");
+
+        // The enrolled person should be the one closest to the camera
+        var face = faces.OrderByDescending(f => f.BoundingBox.Width * f.BoundingBox.Height).First();
+        var embedding = await EnrollDetectedFaceAsync(employeeId, face, source, cancellationToken);
+        return embedding is null
+            ? EnrollmentResult.Failed("Could not compute a face embedding for this image.")
+            : new EnrollmentResult(embedding, faces.Count > 1 ? $"{faces.Count} faces found; enrolled the largest one." : null);
+    }
+
+    /// <summary>
+    /// Enrolls a stored face JPEG (an aligned face, e.g. from the Unknown Faces list).
+    /// </summary>
+    public async Task<EnrollmentResult> EnrollFromFaceJpegAsync(
+        long employeeId,
+        byte[] faceJpeg,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        if (!recognizer.IsReady)
+            return EnrollmentResult.Failed("The face recognizer is not ready (check the SFace model).");
+
+        var decoded = FaceImageHelper.DecodeToBgr(faceJpeg);
+        if (decoded is null)
+            return EnrollmentResult.Failed("The stored face image could not be decoded.");
+
+        var (bgr, width, height) = decoded.Value;
+        var embedding = await EnrollFaceFromCropAsync(employeeId, bgr, width, height, source, cancellationToken);
+        return embedding is null
+            ? EnrollmentResult.Failed("Could not compute a face embedding for this face.")
+            : new EnrollmentResult(embedding, null);
     }
 
     /// <summary>
@@ -97,7 +156,8 @@ public class FaceEnrollmentService
                 IsActive = true,
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow,
-                Source = source
+                Source = source,
+                FaceImage = FaceImageHelper.EncodeJpeg(faceImageData, faceImageWidth, faceImageHeight)
             };
 
             dbContext.FaceEmbeddings.Add(faceEmbedding);

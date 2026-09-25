@@ -138,26 +138,31 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                 var result = await faceRecognizer.RecognizeAsync(face, cancellationToken);
                                 recognitionResults.Add(result);
 
-                                // Phase 5: Persist attendance for recognized employees
-                                if (result.IsMatch && scopeFactory != null)
+                                // Recognized → attendance; unmatched → Unknown Faces for review.
+                                // Location comes from the camera configuration (CameraLocationResolver).
+                                if (scopeFactory != null)
                                 {
                                     try
                                     {
-                                        // Get a default location ID for now (Phase 5 - will be refined later)
-                                        // For now we'll use LocationId 1 (main entrance); Phase 7 can make this dynamic
-                                        long defaultLocationId = 1;
-
                                         using var scope = scopeFactory.CreateScope();
-                                        var attendancePersistenceService = scope.ServiceProvider.GetRequiredService<IAttendancePersistenceService>();
-                                        await attendancePersistenceService.PersistRecognitionResultAsync(
-                                            result,
-                                            configuredCameraId,
-                                            defaultLocationId,
-                                            cancellationToken);
+                                        if (result.IsMatch)
+                                        {
+                                            var attendancePersistenceService = scope.ServiceProvider.GetRequiredService<IAttendancePersistenceService>();
+                                            await attendancePersistenceService.PersistRecognitionResultAsync(
+                                                result,
+                                                configuredCameraId,
+                                                locationId: null,
+                                                cancellationToken);
+                                        }
+                                        else
+                                        {
+                                            var unknownFaceService = scope.ServiceProvider.GetRequiredService<UnknownFaceService>();
+                                            await unknownFaceService.HandleUnknownFaceAsync(face, result, cancellationToken);
+                                        }
                                     }
                                     catch (Exception ex)
                                     {
-                                        logger.LogError(ex, "Error persisting attendance (not crashing pipeline)");
+                                        logger.LogError(ex, "Error saving recognition result (not crashing pipeline)");
                                     }
                                 }
 
@@ -168,8 +173,9 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                     lastUnknownLogTime = DateTime.UtcNow;
                                 }
 
-                                totalFacesRecognized++;
-                                if (!result.IsMatch)
+                                if (result.IsMatch)
+                                    totalFacesRecognized++;
+                                else
                                     totalUnknownFaces++;
                             }
                             catch (Exception ex)

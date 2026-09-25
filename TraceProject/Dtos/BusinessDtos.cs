@@ -12,9 +12,12 @@ public record DepartmentDto(string Name);
 public record DepartmentActivationDto(long id, bool active);
 
 
-public record AddCameraDto(string CameraName, string IPAddress, string Location);
+public record AddCameraDto(string CameraName, string IPAddress, string Location, long? LocationId = null);
 
-public record UpdateCameraDto(string CameraName, string IPAddress, string Location);
+public record UpdateCameraDto(string CameraName, string IPAddress, string Location, long? LocationId = null);
+
+// Settings (single row, edited from the dashboard Settings page)
+public record SystemSettingsDto(float RecognitionThreshold, string WorkStartTime, string WorkEndTime, int LateGraceMinutes, int AttendanceUpdateIntervalMinutes);
 
 public record CameraActivationDto(long id, bool active);
 

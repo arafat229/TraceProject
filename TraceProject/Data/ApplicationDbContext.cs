@@ -21,6 +21,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<Location> Locations { get; set; } = null!;
     public DbSet<EmployeeAccess> EmployeeAccesses { get; set; } = null!;
     public DbSet<Activity> Activities { get; set; } = null!;
+    public DbSet<SystemSetting> SystemSettings { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

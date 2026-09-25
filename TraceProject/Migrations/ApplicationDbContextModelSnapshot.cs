@@ -281,6 +281,9 @@ namespace TraceProject.Migrations
                     b.Property<long>("EmployeeId")
                         .HasColumnType("bigint");
 
+                    b.Property<byte[]>("FaceImage")
+                        .HasColumnType("bytea");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
@@ -406,6 +409,39 @@ namespace TraceProject.Migrations
                     b.ToTable("Reports");
                 });
 
+            modelBuilder.Entity("TraceProject.Models.SystemSetting", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AttendanceUpdateIntervalMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("LateGraceMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<float>("RecognitionThreshold")
+                        .HasColumnType("real");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("WorkEndTime")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("WorkStartTime")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("SystemSettings");
+                });
+
             modelBuilder.Entity("TraceProject.Models.UnknownFace", b =>
                 {
                     b.Property<long>("Id")
@@ -413,6 +449,15 @@ namespace TraceProject.Migrations
                         .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long?>("CameraId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("DetectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<float>("DetectionScore")
+                        .HasColumnType("real");
 
                     b.Property<byte[]>("face")
                         .HasColumnType("bytea");

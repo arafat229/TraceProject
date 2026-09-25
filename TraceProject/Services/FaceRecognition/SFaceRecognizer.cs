@@ -26,8 +26,13 @@ public class SFaceRecognizer : IFaceRecognizer
     private bool isReady = false;
     private bool disposed = false;
 
-    // Temporary dbContext storage for initialization and cache refresh
-    private ApplicationDbContext? tempDbContext = null;
+    // The recognizer is a singleton; each cache refresh uses its own DI scope (DbContext is scoped)
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly SystemSettingsService? settings;
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
+
+    // OpenCV's dnn::Net is not thread-safe; the frame pipeline and enrollment requests share it
+    private readonly object netLock = new();
 
     /// <summary>
     /// In-memory cache of all active employee embeddings.
@@ -47,10 +52,14 @@ public class SFaceRecognizer : IFaceRecognizer
 
     public SFaceRecognizer(
         IOptions<FaceRecognitionOptions> optionsInput,
-        ILogger<SFaceRecognizer> logger)
+        ILogger<SFaceRecognizer> logger,
+        IServiceScopeFactory scopeFactory,
+        SystemSettingsService? settings = null)
     {
         this.options = optionsInput.Value;
         this.logger = logger;
+        this.scopeFactory = scopeFactory;
+        this.settings = settings;
         this.modelPath = options.ModelPath ?? "Models/FaceRecognition/face_recognition_sface_2021dec.onnx";
     }
 
@@ -58,11 +67,8 @@ public class SFaceRecognizer : IFaceRecognizer
     /// Initialize the recognizer by loading the SFace ONNX model and caching embeddings.
     /// Called once at startup via hosted service after app is built.
     /// </summary>
-    public async Task InitializeAsync(ApplicationDbContext dbContext, CancellationToken cancellationToken = default)
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        // Store dbContext temporarily for use in RefreshEmbeddingCacheAsync
-        tempDbContext = dbContext;
-
         try
         {
             await Task.Run(() =>
@@ -195,10 +201,12 @@ public class SFaceRecognizer : IFaceRecognizer
                     swapRB: true,
                     crop: false);
 
-                recognizer!.SetInput(blob);
-
-                // Run inference to compute embedding
-                embeddingMat = recognizer!.Forward();
+                lock (netLock)
+                {
+                    recognizer!.SetInput(blob);
+                    using var output = recognizer!.Forward();
+                    embeddingMat = output.Clone();
+                }
 
                 if (embeddingMat == null || embeddingMat.Empty())
                 {
@@ -209,8 +217,12 @@ public class SFaceRecognizer : IFaceRecognizer
                 // Convert embedding Mat to float array
                 float[] embeddingVector = ConvertMatToFloatArray(embeddingMat);
 
-                // Find best match in cached embeddings
-                return FindBestMatchAsync(embeddingVector);
+                RefreshCacheIfStale();
+
+                // Find best match in cached embeddings; keep the embedding (used to de-duplicate unknown faces)
+                var result = FindBestMatchAsync(embeddingVector);
+                result.Embedding = embeddingVector.Length == SFaceEmbeddingDimension ? embeddingVector : null;
+                return result;
             }, cancellationToken);
         }
         catch (Exception ex)
@@ -282,10 +294,12 @@ public class SFaceRecognizer : IFaceRecognizer
                     swapRB: true,
                     crop: false);
 
-                recognizer!.SetInput(blob);
-
-                // Run inference to compute embedding
-                embeddingMat = recognizer!.Forward();
+                lock (netLock)
+                {
+                    recognizer!.SetInput(blob);
+                    using var output = recognizer!.Forward();
+                    embeddingMat = output.Clone();
+                }
 
                 if (embeddingMat == null || embeddingMat.Empty())
                 {
@@ -321,19 +335,17 @@ public class SFaceRecognizer : IFaceRecognizer
     /// </summary>
     public async Task RefreshEmbeddingCacheAsync(CancellationToken cancellationToken = default)
     {
-        // Use temporarily stored dbContext from initialization, or fail if not initialized
-        if (tempDbContext == null)
-        {
-            logger.LogWarning("RefreshEmbeddingCacheAsync called before initialization or after disposed. Skipping refresh.");
-            return;
-        }
-
+        await refreshGate.WaitAsync(cancellationToken);
         try
         {
-            logger.LogInformation("Refreshing face embedding cache from database...");
+            logger.LogDebug("Refreshing face embedding cache from database...");
+
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
             // Fetch all active employees with their active embeddings
-            var employeesWithEmbeddings = await tempDbContext.Employees
+            var employeesWithEmbeddings = await db.Employees
+                .AsNoTracking()
                 .Where(e => e.IsActive)
                 .Include(e => e.FaceEmbeddings)
                 .ToListAsync(cancellationToken);
@@ -379,7 +391,7 @@ public class SFaceRecognizer : IFaceRecognizer
                 }
 
                 lastCacheRefreshUtc = DateTime.UtcNow;
-                logger.LogInformation(
+                logger.LogDebug(
                     "✓ Face embedding cache refreshed. Employees with embeddings: {empCount}, Total embeddings: {embCount}",
                     embeddingCache.Count, totalEmbeddingsLoaded);
             }
@@ -389,7 +401,34 @@ public class SFaceRecognizer : IFaceRecognizer
             logger.LogError(ex, "Failed to refresh face embedding cache");
             throw;
         }
+        finally
+        {
+            refreshGate.Release();
+        }
     }
+
+    /// <summary>
+    /// Picks up embedding changes made elsewhere (e.g. deactivated employees) every
+    /// FaceRecognition:EmbeddingCacheRefreshSeconds, without blocking recognition.
+    /// </summary>
+    private void RefreshCacheIfStale()
+    {
+        if (options.EmbeddingCacheRefreshSeconds <= 0)
+            return;
+        if ((DateTime.UtcNow - lastCacheRefreshUtc).TotalSeconds < options.EmbeddingCacheRefreshSeconds)
+            return;
+        if (refreshGate.CurrentCount == 0)
+            return; // a refresh is already running
+
+        lastCacheRefreshUtc = DateTime.UtcNow; // avoid piling up refreshes
+        _ = Task.Run(async () =>
+        {
+            try { await RefreshEmbeddingCacheAsync(); }
+            catch (Exception ex) { logger.LogWarning(ex, "Background embedding cache refresh failed"); }
+        });
+    }
+
+    private float SimilarityThreshold => settings?.Current.RecognitionThreshold ?? options.SimilarityThreshold;
 
     /// <summary>
     /// Get cache statistics for monitoring/debug.
@@ -446,13 +485,15 @@ public class SFaceRecognizer : IFaceRecognizer
             }
 
             // Check if the best match exceeds the threshold
-            if (bestSimilarity >= options.SimilarityThreshold && bestEmployeeId >= 0)
+            if (bestSimilarity >= SimilarityThreshold && bestEmployeeId >= 0)
             {
                 string? employeeName = employeeNameCache.TryGetValue(bestEmployeeId, out var name) ? name : null;
                 return RecognitionResult.Match(bestEmployeeId, employeeName ?? "Unknown", bestSimilarity, bestEmbeddingSource);
             }
 
-            return RecognitionResult.Unknown();
+            var unknown = RecognitionResult.Unknown();
+            unknown.Confidence = bestSimilarity;
+            return unknown;
         }
     }
 

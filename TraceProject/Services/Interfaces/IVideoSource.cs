@@ -67,6 +67,12 @@ public interface IVideoSource : IAsyncDisposable
     DateTime? LastFrameTimestampUtc { get; }
 
     /// <summary>
+    /// When the picture content last changed. A stalled stream can keep delivering the same
+    /// picture, so this (not LastFrameTimestampUtc) tells whether the video is really live.
+    /// </summary>
+    DateTime? LastFrameChangeUtc { get; }
+
+    /// <summary>
     /// If connection is in Error status, this holds the exception.
     /// Returns null otherwise.
     /// </summary>

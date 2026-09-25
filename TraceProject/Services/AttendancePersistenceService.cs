@@ -1,41 +1,42 @@
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using TraceProject.Configuration;
 using TraceProject.Data;
+using TraceProject.Hubs;
 using TraceProject.Models;
 using TraceProject.Services.Interfaces;
 
 namespace TraceProject.Services;
 
 /// <summary>
-/// Phase 5 + 6 implementation of attendance persistence with deduplication.
-/// Creates Attendance records from face recognition results with error handling.
-/// Phase 6: Prevents duplicate records within cooldown window.
+/// Turns recognitions into attendance: one Attendance row per employee per (server-local) day.
+/// The first sighting creates it (CheckIn); later sightings move CheckOut forward ("last seen"),
+/// at most once per SystemSettings.AttendanceUpdateIntervalMinutes. Broadcasts
+/// EmployeeCheckedIn / AttendanceUpdated on the NotificationHub.
 /// </summary>
 public class AttendancePersistenceService : IAttendancePersistenceService
 {
     private readonly ApplicationDbContext dbContext;
     private readonly ILogger<AttendancePersistenceService> logger;
-    private readonly int cooldownMinutes;
+    private readonly IHubContext<NotificationHub> hubContext;
+    private readonly SystemSettingsService settings;
+    private readonly CameraOptions cameraOptions;
 
     public AttendancePersistenceService(
         ApplicationDbContext dbContext,
         ILogger<AttendancePersistenceService> logger,
-        IOptions<AttendanceOptions>? attendanceOptions = null)
+        IHubContext<NotificationHub> hubContext,
+        SystemSettingsService settings,
+        IOptions<CameraOptions> cameraOptions)
     {
         this.dbContext = dbContext;
         this.logger = logger;
-        this.cooldownMinutes = attendanceOptions?.Value?.CooldownMinutes ?? 15;
+        this.hubContext = hubContext;
+        this.settings = settings;
+        this.cameraOptions = cameraOptions.Value;
     }
 
-    /// <summary>
-    /// Persist recognition result as attendance if all conditions are met.
-    /// Conditions:
-    /// 1. Recognition was a match (IsMatch = true)
-    /// 2. Employee is active (IsActive = true)
-    /// 3. No recent Attendance record within cooldown window (Phase 6)
-    /// 4. No database errors
-    /// </summary>
     public async Task<Attendance?> PersistRecognitionResultAsync(
         RecognitionResult result,
         long? cameraId,
@@ -44,97 +45,98 @@ public class AttendancePersistenceService : IAttendancePersistenceService
     {
         try
         {
-            // Condition 1: Skip unknown faces
-            if (!result.IsMatch)
-            {
-                logger.LogDebug("Skipping Attendance: Unknown face (no employee match)");
+            if (!result.IsMatch || !result.EmployeeId.HasValue)
                 return null;
-            }
 
-            // Condition 2: Validate EmployeeId
-            if (!result.EmployeeId.HasValue)
-            {
-                logger.LogWarning("Skipping Attendance: RecognitionResult has no EmployeeId");
-                return null;
-            }
-
-            // Condition 3: Verify employee exists and is active
             var employee = await dbContext.Employees
                 .AsNoTracking()
                 .FirstOrDefaultAsync(e => e.Id == result.EmployeeId.Value, cancellationToken);
 
             if (employee is null)
             {
-                logger.LogWarning("Skipping Attendance: Employee {EmployeeId} not found", result.EmployeeId);
+                logger.LogWarning("Skipping attendance: employee {EmployeeId} not found", result.EmployeeId);
                 return null;
             }
 
             if (!employee.IsActive)
             {
-                logger.LogInformation("Skipping Attendance: Employee {EmployeeName} is inactive", employee.FullName);
+                logger.LogInformation("Skipping attendance: employee {EmployeeName} is inactive", employee.FullName);
                 return null;
             }
 
-            // Condition 4: LocationId required
-            if (!locationId.HasValue)
-            {
-                logger.LogWarning("Skipping Attendance: No LocationId provided");
-                return null;
-            }
-
-            // Verify location exists
-            var location = await dbContext.Locations
-                .AsNoTracking()
-                .FirstOrDefaultAsync(l => l.Id == locationId.Value, cancellationToken);
+            var location = locationId.HasValue
+                ? await dbContext.Locations.AsNoTracking().FirstOrDefaultAsync(l => l.Id == locationId.Value, cancellationToken)
+                : null;
+            location ??= await CameraLocationResolver.ResolveAsync(dbContext, cameraOptions, cancellationToken);
 
             if (location is null)
             {
-                logger.LogWarning("Skipping Attendance: Location {LocationId} not found", locationId);
+                logger.LogWarning("Skipping attendance for {EmployeeName}: no location exists. Create one on the Settings page.", employee.FullName);
                 return null;
             }
 
-            // Phase 6: Check cooldown - skip if recent attendance within window
-            var cooldownStart = DateTime.UtcNow.AddMinutes(-cooldownMinutes);
-            var recentAttendance = await dbContext.Attendances
-                .AsNoTracking()
-                .Where(a => a.EmployeeId == result.EmployeeId.Value &&
-                            a.CheckIn >= cooldownStart)
+            var now = DateTime.UtcNow;
+            var dayStartUtc = DateTime.Now.Date.ToUniversalTime();
+
+            var today = await dbContext.Attendances
+                .Where(a => a.EmployeeId == employee.Id && a.CheckIn >= dayStartUtc)
                 .OrderByDescending(a => a.CheckIn)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (recentAttendance != null)
+            if (today is null)
             {
-                var minutesAgo = (DateTime.UtcNow - recentAttendance.CheckIn).TotalMinutes;
-                logger.LogInformation(
-                    "Skipping Attendance (cooldown): Employee {EmployeeName} checked in {MinutesAgo:F1} minutes ago (cooldown: {CooldownMinutes}m)",
-                    employee.FullName,
-                    minutesAgo,
-                    cooldownMinutes);
-                return null;
+                var attendance = new Attendance
+                {
+                    EmployeeId = employee.Id,
+                    LocationId = location.Id,
+                    CameraId = cameraId,
+                    CheckIn = now,
+                    Confidence = result.Confidence,
+                    IsAllowed = true,
+                    CreatedAt = now
+                };
+
+                dbContext.Attendances.Add(attendance);
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                logger.LogInformation("Check-in: {EmployeeName} at {LocationName} (similarity {Confidence:F3})",
+                    employee.FullName, location.Place, result.Confidence);
+
+                await hubContext.Clients.All.SendAsync("EmployeeCheckedIn", new
+                {
+                    attendanceId = attendance.Id,
+                    employeeId = employee.Id,
+                    employeeName = employee.FullName,
+                    locationName = location.Place,
+                    checkIn = attendance.CheckIn,
+                    confidence = attendance.Confidence
+                }, cancellationToken);
+
+                return attendance;
             }
 
-            // Create Attendance record
-            var attendance = new Attendance
-            {
-                EmployeeId = result.EmployeeId.Value,
-                LocationId = locationId.Value,
-                CameraId = cameraId,
-                CheckIn = DateTime.UtcNow,
-                Confidence = result.Confidence,
-                IsAllowed = employee.IsActive, // Allow if employee is active
-                CreatedAt = DateTime.UtcNow
-            };
+            // Already checked in today: move "last seen" forward, not on every frame
+            var lastSeen = today.CheckOut ?? today.CheckIn;
+            var interval = TimeSpan.FromMinutes(Math.Max(0, settings.Current.AttendanceUpdateIntervalMinutes));
+            if (now - lastSeen < interval)
+                return null;
 
-            dbContext.Attendances.Add(attendance);
+            today.CheckOut = now;
+            today.Confidence = Math.Max(today.Confidence, result.Confidence);
+            today.UpdatedAt = now;
             await dbContext.SaveChangesAsync(cancellationToken);
 
-            logger.LogInformation(
-                "Attendance created: Employee {EmployeeName} at {LocationName} (confidence: {Confidence:P})",
-                employee.FullName,
-                location.Place,
-                result.Confidence);
+            logger.LogDebug("Last seen updated: {EmployeeName}", employee.FullName);
 
-            return attendance;
+            await hubContext.Clients.All.SendAsync("AttendanceUpdated", new
+            {
+                attendanceId = today.Id,
+                employeeId = employee.Id,
+                employeeName = employee.FullName,
+                checkOut = today.CheckOut
+            }, cancellationToken);
+
+            return today;
         }
         catch (DbUpdateException dbEx)
         {
@@ -143,7 +145,6 @@ public class AttendancePersistenceService : IAttendancePersistenceService
         }
         catch (OperationCanceledException)
         {
-            logger.LogDebug("Attendance persistence cancelled");
             return null;
         }
         catch (Exception ex)

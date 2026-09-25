@@ -7,6 +7,8 @@ public class Camera : Auditable
     public string CameraName { get; set; } = null!;
     public string IPAddress { get; set; } = null!;
     public string Location { get; set; } = null!;
+    // Where attendance recorded by this camera is filed (FK to Locations; already a column)
+    public long? LocationId { get; set; }
     public bool IsActive { get; set; }
 
     // Streaming properties (Phase 1: RTSP support)

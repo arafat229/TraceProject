@@ -170,7 +170,6 @@ try
     builder.Services.Configure<ConnectionOptions>(builder.Configuration.GetSection("Connection"));
     builder.Services.Configure<FaceDetectionOptions>(builder.Configuration.GetSection("FaceDetection"));
     builder.Services.Configure<FaceRecognitionOptions>(builder.Configuration.GetSection("FaceRecognition"));
-    builder.Services.Configure<AttendanceOptions>(builder.Configuration.GetSection("Attendance"));  // Phase 6: Attendance config
 
     // Both hosted services are wrapped in SafeHostedServiceWrapper. They are registered with
     // AddSingleton<IHostedService> because AddHostedService de-duplicates by implementation
@@ -222,7 +221,8 @@ try
             logger.LogDebug("Creating SFaceRecognizer instance");
             var options = sp.GetRequiredService<IOptions<FaceRecognitionOptions>>();
             var faceRecognizerLogger = sp.GetRequiredService<ILogger<SFaceRecognizer>>();
-            var recognizer = new SFaceRecognizer(options, faceRecognizerLogger);
+            var recognizer = new SFaceRecognizer(options, faceRecognizerLogger,
+                sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<SystemSettingsService>());
             logger.LogDebug("✓ SFaceRecognizer created successfully");
             return recognizer;
         }
@@ -234,6 +234,8 @@ try
     });
 
     builder.Services.AddScoped<FaceEnrollmentService>();  // For enrollment operations
+    builder.Services.AddSingleton<SystemSettingsService>();  // Settings page values, cached in memory
+    builder.Services.AddSingleton<UnknownFaceService>();     // Saves unmatched faces for review
 
     // Register attendance persistence service (Phase 5: Store recognition results as attendance)
     builder.Services.AddScoped<IAttendancePersistenceService, AttendancePersistenceService>();
@@ -292,6 +294,11 @@ try
     builder.Services.AddOpenApi();
     builder.Services.AddCors();
 
+    // Frontend origins allowed to call the API (Cors:AllowedOrigins in appsettings)
+    var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() is { Length: > 0 } origins
+        ? origins
+        : new[] { "http://localhost:5173" };
+
 
 
     Log.Information("Building web application host...");
@@ -335,6 +342,7 @@ try
             logger.LogInformation("Database migrations completed successfully");
 
             await SeedData.Initialize(scope.ServiceProvider);
+            await scope.ServiceProvider.GetRequiredService<SystemSettingsService>().LoadAsync();
             logger.LogInformation("Database seeding completed successfully");
         }
         catch (Exception ex)
@@ -376,8 +384,7 @@ try
             var faceRecognizer = scope.ServiceProvider.GetRequiredService<IFaceRecognizer>();
             if (faceRecognizer is SFaceRecognizer sfaceRecognizer)
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                await sfaceRecognizer.InitializeAsync(dbContext);
+                await sfaceRecognizer.InitializeAsync();
             }
         }
         catch (Exception ex)
@@ -402,7 +409,7 @@ try
     app.UseRouting();
 
     app.UseCors(x => x
-     .WithOrigins("http://localhost:5173")
+     .WithOrigins(allowedOrigins)
      .AllowAnyMethod()
      .AllowAnyHeader()
      .AllowCredentials());

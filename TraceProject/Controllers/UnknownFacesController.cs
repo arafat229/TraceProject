@@ -7,6 +7,7 @@ using TraceProject.Data;
 using TraceProject.Dtos;
 using TraceProject.Hubs;
 using TraceProject.Models;
+using TraceProject.Services.FaceRecognition;
 using PaginationDto = HlkHelpers.PaginationDto;
 
 namespace TraceProject.Controllers;
@@ -19,12 +20,14 @@ public class UnknownFacesController : ControllerBase
     private readonly ApplicationDbContext dbContext;
     private readonly ILogger<UnknownFacesController> logger;
     private readonly IHubContext<NotificationHub> hubContext;
+    private readonly FaceEnrollmentService enrollmentService;
 
-    public UnknownFacesController(ApplicationDbContext dbContext, ILogger<UnknownFacesController> logger, IHubContext<NotificationHub> hubContext)
+    public UnknownFacesController(ApplicationDbContext dbContext, ILogger<UnknownFacesController> logger, IHubContext<NotificationHub> hubContext, FaceEnrollmentService enrollmentService)
     {
         this.dbContext = dbContext;
         this.logger = logger;
         this.hubContext = hubContext;
+        this.enrollmentService = enrollmentService;
     }
 
     [HttpPost]
@@ -35,17 +38,21 @@ public class UnknownFacesController : ControllerBase
             if (dto.face == null || dto.face.Length == 0)
                 return BadRequest(CallResult.Error("Face data is required"));
 
+            var location = await dbContext.Locations.FirstOrDefaultAsync(l => l.Id == dto.LocationId, cancellation);
+
             var unknownFace = new UnknownFace
             {
                 face = dto.face,
-                UnknownFaceLocations = new List<UnknownFaceLocation>()
+                DetectedAtUtc = DateTime.UtcNow,
+                UnknownFaceLocations = location is null
+                    ? new List<UnknownFaceLocation>()
+                    : new List<UnknownFaceLocation> { new() { LocationId = location.Id } }
             };
 
             dbContext.Add(unknownFace);
             await dbContext.SaveChangesAsync(cancellation);
 
             // Broadcast unknown face detected event in real-time
-            var location = await dbContext.Locations.FirstOrDefaultAsync(l => l.Id == dto.LocationId, cancellation);
             await hubContext.Clients.All.SendAsync("UnknownFaceDetected", new
             {
                 unknownFaceId = unknownFace.Id,
@@ -61,28 +68,59 @@ public class UnknownFacesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Newest first. Same paged shape as PagedList ({ items, totalCount, totalPages, currentPage, … });
+    /// each item: { id, detectedAtUtc, detectionScore, cameraId, image (base64 JPEG), locations: [{ id, locationId, place }] }.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetUnknownFaces([FromQuery] PaginationDto? dto, CancellationToken cancellation)
     {
         try
         {
             dto ??= new PaginationDto();
+            int pageNumber = Math.Max(1, dto.PageNumber);
+            int pageSize = Math.Clamp(dto.PageSize, 1, 500);
 
-            var source = dbContext.UnknownFaces
-                .Include(u => u.UnknownFaceLocations)
-                .ThenInclude(u => u.Location)
-                .AsNoTracking();
+            var query = dbContext.UnknownFaces.AsNoTracking();
+            int totalCount = await query.CountAsync(cancellation);
 
-            var list = await PagedList<UnknownFace>.CreateAsync(source, dto,
-                orderBy: x => x.Id,
-                selector: u => new { 
-                    u.Id, 
-                    FaceDataLength = u.face != null ? u.face.Length : 0,
-                    Locations = u.UnknownFaceLocations.Select(l => new { l.Id, l.LocationId, l.Location.Place })
-                },
-                cancellation: cancellation);
+            var rows = await query
+                .OrderByDescending(u => u.DetectedAtUtc)
+                .ThenByDescending(u => u.Id)
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .Select(u => new
+                {
+                    u.Id,
+                    u.DetectedAtUtc,
+                    u.DetectionScore,
+                    u.CameraId,
+                    u.face,
+                    Locations = u.UnknownFaceLocations!.Select(l => new { l.Id, l.LocationId, l.Location.Place }).ToList()
+                })
+                .ToListAsync(cancellation);
 
-            return Ok(CallResult.Ok(data: list));
+            int totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+            var page = new
+            {
+                CurrentPage = pageNumber,
+                TotalPages = totalPages,
+                PageSize = pageSize,
+                TotalCount = totalCount,
+                HasNextPage = pageNumber < totalPages,
+                HasPreviousPage = pageNumber > 1,
+                Items = rows.Select(u => new
+                {
+                    u.Id,
+                    u.DetectedAtUtc,
+                    u.DetectionScore,
+                    u.CameraId,
+                    Image = u.face is { Length: > 0 } ? Convert.ToBase64String(u.face) : null,
+                    u.Locations
+                })
+            };
+
+            return Ok(CallResult.Ok(data: page));
         }
         catch (Exception ex)
         {
@@ -250,22 +288,25 @@ public class UnknownFacesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Creates a new employee from an unknown face and enrolls that face for recognition.
+    /// </summary>
     [HttpPost("{id}/register-employee")]
     public async Task<IActionResult> RegisterEmployee(long id, RegisterUnknownFaceDto dto, CancellationToken cancellation)
     {
         try
         {
             var unknownFace = await dbContext.UnknownFaces.FirstOrDefaultAsync(uf => uf.Id == id, cancellation);
-
             if (unknownFace is null)
                 return NotFound(CallResult.Error("Unknown face not found"));
 
-            // Check if department exists
             var department = await dbContext.Departments.FirstOrDefaultAsync(d => d.Id == dto.DepartmentId, cancellation);
             if (department is null)
                 return BadRequest(CallResult.Error("Department not found"));
 
-            // Create new employee from unknown face
+            if (await dbContext.Employees.AnyAsync(e => e.Email == dto.Email, cancellation))
+                return BadRequest(CallResult.Error("An employee with this email already exists"));
+
             var employee = new Employee
             {
                 Email = dto.Email,
@@ -277,27 +318,34 @@ public class UnknownFacesController : ControllerBase
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
             };
-
             dbContext.Add(employee);
-
-            // Create face profile for this employee
-            var faceProfile = new FaceProfil
-            {
-                EmployeeId = employee.Id,
-                FrontProfile = unknownFace.face
-            };
-            dbContext.Add(faceProfile);
-
-            // Remove unknown face from system (mark resolved)
-            dbContext.Remove(unknownFace);
-
             await dbContext.SaveChangesAsync(cancellation);
 
-            return Ok(CallResult.Ok(data: new
+            await hubContext.Clients.All.SendAsync("EmployeeAdded", new
             {
                 employeeId = employee.Id,
-                message = "Employee registered successfully from unknown face"
-            }));
+                fullName = employee.FullName,
+                department = department.Name
+            }, cancellation);
+
+            var enrollment = await enrollmentService.EnrollFromFaceJpegAsync(employee.Id, unknownFace.face ?? [], $"unknown_face_{id}", cancellation);
+            if (enrollment.Embedding is null)
+            {
+                // Keep the unknown face so it can still be matched to this employee later
+                return Ok(CallResult.Ok($"Employee created, but the face could not be enrolled: {enrollment.Error}", new { employeeId = employee.Id, faceEnrolled = false }));
+            }
+
+            dbContext.Remove(unknownFace);
+            await dbContext.SaveChangesAsync(cancellation);
+
+            await hubContext.Clients.All.SendAsync("UnknownFaceResolved", new
+            {
+                unknownFaceId = id,
+                employeeId = employee.Id,
+                employeeName = employee.FullName
+            }, cancellation);
+
+            return Ok(CallResult.Ok("Employee registered and face enrolled", new { employeeId = employee.Id, faceEnrolled = true }));
         }
         catch (Exception ex)
         {
@@ -306,51 +354,37 @@ public class UnknownFacesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Enrolls an unknown face as an additional face of an existing employee.
+    /// </summary>
     [HttpPost("{id}/match-employee")]
     public async Task<IActionResult> MatchEmployee(long id, MatchUnknownFaceDto dto, CancellationToken cancellation)
     {
         try
         {
             var unknownFace = await dbContext.UnknownFaces.FirstOrDefaultAsync(uf => uf.Id == id, cancellation);
-
             if (unknownFace is null)
                 return NotFound(CallResult.Error("Unknown face not found"));
 
-            var employee = await dbContext.Employees.FirstOrDefaultAsync(e => e.Id == dto.EmployeeId, cancellation);
-
+            var employee = await dbContext.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.Id == dto.EmployeeId, cancellation);
             if (employee is null)
                 return NotFound(CallResult.Error("Employee not found"));
 
-            // Link this unknown face to employee's face profile for training data improvement
-            var faceProfile = await dbContext.FaceProfiles.FirstOrDefaultAsync(fp => fp.EmployeeId == dto.EmployeeId, cancellation);
+            var enrollment = await enrollmentService.EnrollFromFaceJpegAsync(employee.Id, unknownFace.face ?? [], $"unknown_face_{id}", cancellation);
+            if (enrollment.Embedding is null)
+                return BadRequest(CallResult.Error(enrollment.Error ?? "The face could not be enrolled"));
 
-            if (faceProfile is null)
-            {
-                // Create new face profile if one doesn't exist
-                faceProfile = new FaceProfil
-                {
-                    EmployeeId = dto.EmployeeId,
-                    FrontProfile = unknownFace.face
-                };
-                dbContext.Add(faceProfile);
-            }
-            else
-            {
-                // Could enhance existing face data here if system supports face data merging
-                // For now, just mark as updated
-                dbContext.Update(faceProfile);
-            }
-
-            // Note: Keep the unknown face record for audit trail, but mark it as resolved/matched
-            // Alternatively, you could delete it if the system doesn't need audit trails
             dbContext.Remove(unknownFace);
-
             await dbContext.SaveChangesAsync(cancellation);
 
-            return Ok(CallResult.Ok(data: new
+            await hubContext.Clients.All.SendAsync("UnknownFaceResolved", new
             {
-                message = "Unknown face matched to employee successfully"
-            }));
+                unknownFaceId = id,
+                employeeId = employee.Id,
+                employeeName = employee.FullName
+            }, cancellation);
+
+            return Ok(CallResult.Ok($"Face enrolled for {employee.FullName}"));
         }
         catch (Exception ex)
         {

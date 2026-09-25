@@ -51,4 +51,10 @@ public class CameraOptions
     /// Set to false to disable capture without removing config.
     /// </summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Location that attendance and unknown faces from this camera are filed under.
+    /// If not set, the Cameras row (Id) LocationId is used, then the first active location.
+    /// </summary>
+    public long? LocationId { get; set; }
 }

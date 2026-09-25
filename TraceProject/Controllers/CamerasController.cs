@@ -57,11 +57,16 @@ public class CamerasController : ControllerBase
             if (camera is not null) 
                 return BadRequest(CallResult.Error("Camera already exists"));
 
+            var location = await FindLocationAsync(dto.LocationId, cancellation);
+            if (dto.LocationId.HasValue && location is null)
+                return BadRequest(CallResult.Error("Location not found"));
+
             camera = new()
             {
                 CameraName = dto.CameraName,
                 IPAddress = dto.IPAddress,
-                Location = dto.Location,
+                Location = string.IsNullOrWhiteSpace(dto.Location) ? location?.Place ?? "" : dto.Location,
+                LocationId = location?.Id,
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
             };
@@ -91,7 +96,7 @@ public class CamerasController : ControllerBase
 
             var list = await PagedList<Camera>.CreateAsync(source, dto,
                 orderBy: x => x.CameraName,
-                selector: c => new { c.Id, c.CameraName, c.IPAddress, c.Location, c.IsActive, c.CreatedAt, c.UpdatedAt },
+                selector: c => new { c.Id, c.CameraName, c.IPAddress, c.Location, c.LocationId, c.IsActive, c.CreatedAt, c.UpdatedAt },
                 whereClause: x => x.CameraName.ToLower().Contains(searchQuery) || x.IPAddress.ToLower().Contains(searchQuery) || x.Location.ToLower().Contains(searchQuery),
                 cancellation: cancellation);
 
@@ -141,9 +146,14 @@ public class CamerasController : ControllerBase
             if (exists) 
                 return BadRequest(CallResult.Error("Camera with this name already exists"));
 
+            var location = await FindLocationAsync(dto.LocationId, cancellation);
+            if (dto.LocationId.HasValue && location is null)
+                return BadRequest(CallResult.Error("Location not found"));
+
             camera.CameraName = dto.CameraName;
             camera.IPAddress = dto.IPAddress;
-            camera.Location = dto.Location;
+            camera.Location = string.IsNullOrWhiteSpace(dto.Location) ? location?.Place ?? "" : dto.Location;
+            camera.LocationId = location?.Id;
             camera.UpdatedAt = DateTime.UtcNow;
 
             dbContext.Update(camera);
@@ -328,6 +338,11 @@ public class CamerasController : ControllerBase
         Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
         return File(jpeg, "image/jpeg");
     }
+
+    private Task<Location?> FindLocationAsync(long? locationId, CancellationToken cancellation) =>
+        locationId.HasValue
+            ? dbContext.Locations.AsNoTracking().FirstOrDefaultAsync(l => l.Id == locationId.Value, cancellation)
+            : Task.FromResult<Location?>(null);
 
     private byte[]? EncodeJpeg(IVideoFrame frame)
     {

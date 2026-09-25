@@ -261,7 +261,9 @@ public class YuNetFaceDetector : IFaceDetector
             }
 
             // Assume raw BGR data as fallback
-            logger.LogWarning("Unknown pixel format: {format}; attempting BGR interpretation", frame.PixelFormat);
+            // Packed BGR (e.g. StillImageFrame for uploaded photos) or an unknown format treated as BGR
+            if (!frame.PixelFormat.Equals("BGR", StringComparison.OrdinalIgnoreCase))
+                logger.LogWarning("Unknown pixel format: {format}; attempting BGR interpretation", frame.PixelFormat);
             GCHandle handle = GCHandle.Alloc(frame.Data, GCHandleType.Pinned);
             try
             {

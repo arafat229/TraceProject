@@ -45,6 +45,11 @@ public class RecognitionResult
     public DateTime RecognitionTimestampUtc { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// L2-normalized SFace embedding of the face (set for matches and unknowns when available).
+    /// </summary>
+    public float[]? Embedding { get; set; }
+
+    /// <summary>
     /// Create an "Unknown" result (no match found).
     /// </summary>
     public static RecognitionResult Unknown() => new()
