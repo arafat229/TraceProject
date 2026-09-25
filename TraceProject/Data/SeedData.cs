@@ -1,4 +1,5 @@
 ﻿using HlkHelpers;
+using TraceProject.Helpers;
 using TraceProject.Models;
 
 namespace TraceProject.Data;
@@ -23,7 +24,7 @@ public class SeedData
                     Email = "admin@trace.com",
                     FullName = "Admin User",
                     IsActive = true,
-                    Role = "SuperAdmin", 
+                    Role = AppConstants.AdministratorRole, 
                 };
                 userManager.SetUserPassword(ref user, "P@ssw0rd");
                 db.Add(user);

@@ -361,3 +361,29 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ---------------------------------------------------------------------------
+# TraceProject
+# ---------------------------------------------------------------------------
+
+# Local config. Secrets live in User Secrets / environment variables;
+# TraceProject/appsettings.example.json is the committed template.
+appsettings.json
+
+# Backups and the old SQLite database (the app uses PostgreSQL now)
+TraceProject-Backup.zip
+traceproject.db
+traceproject.db-shm
+traceproject.db-wal
+
+# Old root-level project layout: not in TraceProject.slnx and no longer compiles
+/Program.cs
+/TraceProject.csproj
+/Data/
+/Dto/
+/Helpers/
+/Hubs/
+/Models/
+
+# Claude Code per-user settings
+.claude/settings.local.json

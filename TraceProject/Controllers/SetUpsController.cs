@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TraceProject.Data;
 using TraceProject.Dtos;
+using TraceProject.Models;
+using PaginationDto = HlkHelpers.PaginationDto;
 
 namespace TraceProject.Controllers;
 
@@ -35,10 +37,12 @@ public class SetUpsController : ControllerBase
             department = new()
             {
                 Name = dto.Name,
-                IsActive = true
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
             };
 
             dbContext.Add(department);
+            await dbContext.SaveChangesAsync(cancellation);
 
             return Ok(CallResult.Ok("Department added successfully"));
 
@@ -67,6 +71,7 @@ public class SetUpsController : ControllerBase
             department.Name = dto.Name;
             department.UpdatedAt = DateTime.UtcNow;
             dbContext.Update(department);
+            await dbContext.SaveChangesAsync(cancellation);
 
             return Ok(CallResult.Ok("Department updated successfully"));
 
@@ -91,6 +96,7 @@ public class SetUpsController : ControllerBase
             department.IsActive = dto.active;
             department.UpdatedAt = DateTime.UtcNow; 
             dbContext.Update(department);
+            await dbContext.SaveChangesAsync(cancellation);
 
             return Ok(CallResult.Ok("Department updated successfully"));
 
@@ -102,90 +108,91 @@ public class SetUpsController : ControllerBase
         }
     }
 
-
-    [HttpPost("cameras")]
-    public async Task<IActionResult> AddCamera(AddCameraDto dto, CancellationToken cancellation)
+    [HttpGet("departments")]
+    public async Task<IActionResult> GetDepartments([FromQuery] PaginationDto? dto, CancellationToken cancellation)
     {
         try
         {
-            var camera = await dbContext.Cameras.FirstOrDefaultAsync(c => c.CameraName == dto.CameraName, cancellation);
+            dto ??= new PaginationDto();
 
-            if (camera is not null) return BadRequest(CallResult.Error("Camera already exists"));
+            var searchQuery = (dto.Query ?? "").Trim().ToLower();
 
-            camera = new()
-            {
-                CameraName = dto.CameraName,
-                IPAddress = dto.IPAddress,
-                Location = dto.Location,
-                IsActive = true
-            };
+            var source = dbContext.Departments.AsNoTracking();
 
-            dbContext.Add(camera);
+            var list = await PagedList<Department>.CreateAsync(source, dto,
+                orderBy: x => x.Name,
+                selector: d => new { d.Id, d.Name, d.IsActive, d.CreatedAt, d.UpdatedAt },
+                whereClause: x => x.Name.ToLower().Contains(searchQuery),
+               cancellation: cancellation);
 
-            return Ok(CallResult.Ok("Camera added successfully"));
+            return Ok(CallResult.Ok(data: list));
 
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "{action} failed: {error}", nameof(AddCamera), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetDepartments), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }
 
-
-    [HttpPut("cameras/{id}")]
-    public async Task<IActionResult> UpdateCamera(long id, UpdateCameraDto dto, CancellationToken cancellation)
+    [HttpGet("departments/{id}")]
+    public async Task<IActionResult> GetDepartmentById(long id, CancellationToken cancellation)
     {
         try
         {
-            var camera = await dbContext.Cameras.FirstOrDefaultAsync(c => c.Id == id, cancellation);
+            var department = await dbContext.Departments
+                .AsNoTracking()
+                .FirstOrDefaultAsync(d => d.Id == id, cancellation);
 
-            if (camera is null) return BadRequest(CallResult.Error("Camera not found"));
+            if (department is null)
+                return NotFound(CallResult.Error("Department not found"));
 
-            var exists = await dbContext.Cameras.AnyAsync(c => c.CameraName == dto.CameraName && c.Id != id, cancellation);
+            var employeeCount = await dbContext.Employees
+                .CountAsync(e => e.DepartmentId == id, cancellation);
 
-            if (exists) return BadRequest(CallResult.Error("Camera with this name already exists"));
-
-            camera.CameraName = dto.CameraName;
-            camera.IPAddress = dto.IPAddress;
-            camera.Location = dto.Location;
-            camera.UpdatedAt = DateTime.UtcNow;
-            dbContext.Update(camera);
-
-            return Ok(CallResult.Ok("Camera updated successfully"));
-
+            return Ok(CallResult.Ok(data: new { 
+                department.Id, 
+                department.Name, 
+                department.IsActive, 
+                department.CreatedAt, 
+                department.UpdatedAt, 
+                EmployeeCount = employeeCount 
+            }));
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "{action} failed: {error}", nameof(UpdateCamera), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetDepartmentById), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }
 
-
-    [HttpPost("cameras/activation")]
-    public async Task<IActionResult> CameraActivation(CameraActivationDto dto, CancellationToken cancellation)
+    [HttpDelete("departments/{id}")]
+    public async Task<IActionResult> DeleteDepartment(long id, CancellationToken cancellation)
     {
         try
         {
-            var camera = await dbContext.Cameras.FirstOrDefaultAsync(c => c.Id == dto.id, cancellation);
+            var department = await dbContext.Departments.FirstOrDefaultAsync(d => d.Id == id, cancellation);
 
-            if (camera is null) return BadRequest(CallResult.Error("Camera not found"));
+            if (department is null)
+                return NotFound(CallResult.Error("Department not found"));
 
-            camera.IsActive = dto.active;
-            camera.UpdatedAt = DateTime.UtcNow;
-            dbContext.Update(camera);
+            // Check if department has employees
+            var hasEmployees = await dbContext.Employees
+                .AnyAsync(e => e.DepartmentId == id, cancellation);
 
-            return Ok(CallResult.Ok("Camera updated successfully"));
+            if (hasEmployees)
+                return BadRequest(CallResult.Error("Cannot delete department with employees"));
 
+            dbContext.Remove(department);
+            await dbContext.SaveChangesAsync(cancellation);
+
+            return Ok(CallResult.Ok("Department deleted successfully"));
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "{action} failed: {error}", nameof(CameraActivation), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(DeleteDepartment), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }
-
-
 
 }

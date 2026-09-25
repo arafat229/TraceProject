@@ -51,6 +51,7 @@ public class AccountController : ControllerBase
             userManager.SetUserPassword(ref user, user.Code);
 
             dbContext.Add(user);
+            await dbContext.SaveChangesAsync(cancellation);
 
             return Ok(CallResult.Ok($"Account created Successfully with user pass code: {user.Code}"));
 
@@ -77,6 +78,8 @@ public class AccountController : ControllerBase
 
             if (user.CodeExpiry < DateTime.UtcNow) return BadRequest(CallResult.Error("Password code has expired"));
 
+            if (dto.Code != user.Code) return BadRequest(CallResult.Error("Invalid or incorrect password code"));
+
             user.Code = "";
             user.CodeExpiry = null;
             user.UpdatedAt = DateTime.UtcNow;
@@ -84,6 +87,7 @@ public class AccountController : ControllerBase
             userManager.SetUserPassword(ref user, dto.Password);
 
             dbContext.Update(user);
+            await dbContext.SaveChangesAsync(cancellation);
 
             return Ok(CallResult.Ok("Password updated successfully"));
 
@@ -185,11 +189,147 @@ public class AccountController : ControllerBase
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "{action} failed: {error}", nameof(SetPasswordUser), ex.GetFullErrorMessage());
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetUser), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }
 
+    [HttpGet("users/{id}")]
+    public async Task<IActionResult> GetUserById(long id, CancellationToken cancellation)
+    {
+        try
+        {
+            var user = await dbContext.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == id, cancellation);
+
+            if (user is null) 
+                return NotFound(CallResult.Error("User not found"));
+
+            return Ok(CallResult.Ok(data: new { user.Id, user.Email, user.FullName, user.Role, user.IsActive, user.CreatedAt, user.UpdatedAt }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetUserById), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpPut("users/{id}")]
+    public async Task<IActionResult> UpdateUser(long id, UpdateUserDto updateDto, CancellationToken cancellation)
+    {
+        try
+        {
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == id, cancellation);
+
+            if (user is null) 
+                return NotFound(CallResult.Error("User not found"));
+
+            // Check if email is already taken by another user
+            if (!string.IsNullOrWhiteSpace(updateDto.Email) && updateDto.Email != user.Email)
+            {
+                var emailExists = await dbContext.Users.AsNoTracking()
+                    .AnyAsync(u => u.Email == updateDto.Email && u.Id != id, cancellation);
+
+                if (emailExists)
+                    return BadRequest(CallResult.Error("Email already in use"));
+
+                user.Email = updateDto.Email;
+            }
+
+            if (!string.IsNullOrWhiteSpace(updateDto.FullName))
+                user.FullName = updateDto.FullName;
+
+            if (!string.IsNullOrWhiteSpace(updateDto.Role))
+                user.Role = updateDto.Role;
+
+            user.UpdatedAt = DateTime.UtcNow;
+            dbContext.Update(user);
+            await dbContext.SaveChangesAsync(cancellation);
+
+            return Ok(CallResult.Ok(data: new { user.Id, user.Email, user.FullName, user.Role, user.IsActive }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(UpdateUser), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpDelete("users/{id}")]
+    public async Task<IActionResult> DeleteUser(long id, CancellationToken cancellation)
+    {
+        try
+        {
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == id, cancellation);
+
+            if (user is null) 
+                return NotFound(CallResult.Error("User not found"));
+
+            dbContext.Remove(user);
+            await dbContext.SaveChangesAsync(cancellation);
+
+            return Ok(CallResult.Ok("User deleted successfully"));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(DeleteUser), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpPost("users/change-password")]
+    public async Task<IActionResult> ChangePassword(ChangePasswordDto changePasswordDto, CancellationToken cancellation)
+    {
+        try
+        {
+            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+            if (string.IsNullOrWhiteSpace(userId)) 
+                return Unauthorized(CallResult.Error("User not authenticated"));
+
+            if (!long.TryParse(userId, out var id))
+                return BadRequest(CallResult.Error("Invalid user ID"));
+
+            var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == id, cancellation);
+
+            if (user is null) 
+                return NotFound(CallResult.Error("User not found"));
+
+            var isOldPasswordValid = userManager.CheckPassword(user, changePasswordDto.OldPassword);
+
+            if (!isOldPasswordValid)
+                return BadRequest(CallResult.Error("Old password is incorrect"));
+
+            userManager.SetUserPassword(ref user, changePasswordDto.NewPassword);
+            user.UpdatedAt = DateTime.UtcNow;
+
+            dbContext.Update(user);
+            await dbContext.SaveChangesAsync(cancellation);
+
+            return Ok(CallResult.Ok("Password changed successfully"));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(ChangePassword), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    [HttpPost("users/logout")]
+    public IActionResult Logout()
+    {
+        try
+        {
+            // SignalR disconnection or token invalidation would be handled on client side
+            return Ok(CallResult.Ok("Logout successful"));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(Logout), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
 
 }
 
