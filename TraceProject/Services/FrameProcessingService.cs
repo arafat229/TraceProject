@@ -59,6 +59,24 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
         this.configuredCameraId = cameraOptions?.Value?.Id;
     }
 
+    // An employee counts as "seen" only after RequiredMatches recognitions within ConfirmationWindow
+    private const int RequiredMatches = 3;
+    private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(3);
+    private readonly Dictionary<long, Queue<DateTime>> recentMatches = new();
+
+    private bool IsConfirmedSighting(long employeeId)
+    {
+        var now = DateTime.UtcNow;
+        if (!recentMatches.TryGetValue(employeeId, out var times))
+            recentMatches[employeeId] = times = new Queue<DateTime>();
+
+        times.Enqueue(now);
+        while (times.Count > 0 && now - times.Peek() > ConfirmationWindow)
+            times.Dequeue();
+
+        return times.Count >= RequiredMatches;
+    }
+
     /// <summary>
     /// Start the frame processing loop (called by hosted service).
     /// </summary>
@@ -133,10 +151,18 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                     {
                         foreach (var face in detectedFaces)
                         {
+                            // Side profiles give unreliable embeddings: don't recognize them at all
+                            if (!face.IsFrontal)
+                                continue;
+
                             try
                             {
                                 var result = await faceRecognizer.RecognizeAsync(face, cancellationToken);
                                 recognitionResults.Add(result);
+
+                                // Close to two employees at once: ignore (neither attendance nor unknown)
+                                if (result.IsAmbiguous)
+                                    continue;
 
                                 // Recognized → attendance; unmatched → Unknown Faces for review.
                                 // Location comes from the camera configuration (CameraLocationResolver).
@@ -147,12 +173,16 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                         using var scope = scopeFactory.CreateScope();
                                         if (result.IsMatch)
                                         {
-                                            var attendancePersistenceService = scope.ServiceProvider.GetRequiredService<IAttendancePersistenceService>();
-                                            await attendancePersistenceService.PersistRecognitionResultAsync(
-                                                result,
-                                                configuredCameraId,
-                                                locationId: null,
-                                                cancellationToken);
+                                            // Single-frame mistakes happen; only act on an employee seen consistently
+                                            if (IsConfirmedSighting(result.EmployeeId!.Value))
+                                            {
+                                                var attendancePersistenceService = scope.ServiceProvider.GetRequiredService<IAttendancePersistenceService>();
+                                                await attendancePersistenceService.PersistRecognitionResultAsync(
+                                                    result,
+                                                    configuredCameraId,
+                                                    locationId: null,
+                                                    cancellationToken);
+                                            }
                                         }
                                         else
                                         {

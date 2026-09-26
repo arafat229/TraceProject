@@ -43,6 +43,10 @@ dotnet ef database update
 2. `Services/FrameProcessingService`, a singleton `BackgroundService` that is also exposed as `IFrameProcessingService`, polls `GetLatestFrame()` at `TargetProcessingFps`, resizes the frame, and runs:
    - `IFaceDetector` → `YuNetFaceDetector` (`FaceDetectorYN`, ONNX model in `Models/FaceDetection/`)
    - `IFaceRecognizer` → `SFaceRecognizer` (`Models/FaceRecognition/`), matching against an in-memory cache of `FaceEmbeddings`. It refreshes the cache through its own DI scope, both after enrollment changes and every `EmbeddingCacheRefreshSeconds`, and reads its threshold from `SystemSettingsService`.
+   - **Safeguards against misidentification:**
+     - Side-profile faces (`DetectedFace.IsFrontal == false`, judged from the eye and nose landmarks) are not recognized, saved as unknown, or enrolled.
+     - A match must beat the next-best employee by 0.06 (`AmbiguityMargin`); otherwise the result `IsAmbiguous` and is ignored.
+     - An employee must be matched 3 times within 3 s (`FrameProcessingService.IsConfirmedSighting`) before attendance is touched.
    - on a match, `AttendancePersistenceService`, **per employee and per day** (unique index on `EmployeeId` + `WorkDate`, where `WorkDate` is the server-local date from `Services/WorkDay.cs`):
      - **Check-in** is the first recognition that day. It creates the row and broadcasts `EmployeeCheckedIn`.
      - **Check-out** is that employee's own last recognition that day. It is updated at most once a minute and broadcasts `AttendanceUpdated`.

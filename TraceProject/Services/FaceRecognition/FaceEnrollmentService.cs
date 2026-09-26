@@ -53,8 +53,10 @@ public class FaceEnrollmentService
         if (faces.Count == 0)
             return EnrollmentResult.Failed("No face found. Face the camera directly, with good lighting.");
 
-        // The enrolled person should be the one closest to the camera
+        // The enrolled person should be the one closest to the camera, looking at it
         var face = faces.OrderByDescending(f => f.BoundingBox.Width * f.BoundingBox.Height).First();
+        if (!face.IsFrontal)
+            return EnrollmentResult.Failed("The face is turned sideways. Enroll a face looking straight at the camera — side profiles cause mix-ups between people.");
         var embedding = await EnrollDetectedFaceAsync(employeeId, face, source, cancellationToken);
         return embedding is null
             ? EnrollmentResult.Failed("Could not compute a face embedding for this image.")

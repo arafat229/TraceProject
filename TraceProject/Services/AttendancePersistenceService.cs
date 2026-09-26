@@ -152,7 +152,7 @@ public class AttendancePersistenceService : IAttendancePersistenceService
         var employeeName = result.MatchedEmployeeName
             ?? await dbContext.Employees.Where(e => e.Id == row.EmployeeId).Select(e => e.FullName).FirstOrDefaultAsync(cancellationToken);
 
-        logger.LogDebug("Check-out updated: {EmployeeName} last seen {CheckOut:HH:mm}", employeeName, now);
+        logger.LogInformation("Check-out: {EmployeeName} seen again at {CheckOut:HH:mm:ss} (similarity {Confidence:F3})", employeeName, now, result.Confidence);
 
         await hubContext.Clients.All.SendAsync("AttendanceUpdated", new
         {

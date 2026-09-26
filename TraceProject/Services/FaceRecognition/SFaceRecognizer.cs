@@ -48,6 +48,9 @@ public class SFaceRecognizer : IFaceRecognizer
     private const int SFaceInputSize = 112; // SFace model input is 112x112
     private const int SFaceEmbeddingDimension = 128;
 
+    // A match must beat the next most similar employee by at least this much
+    private const float AmbiguityMargin = 0.06f;
+
     public bool IsReady => isReady && recognizer is not null && !disposed;
 
     public SFaceRecognizer(
@@ -463,30 +466,49 @@ public class SFaceRecognizer : IFaceRecognizer
                 return RecognitionResult.Unknown();
             }
 
-            float bestSimilarity = 0f;
+            // Best similarity per employee (over all of their enrolled faces)
+            float bestSimilarity = 0f, secondBestSimilarity = 0f;
             long bestEmployeeId = -1;
-            long bestEmbeddingId = -1;
             string? bestEmbeddingSource = null;
 
             foreach (var (employeeId, embeddingList) in embeddingCache)
             {
-                foreach (var (embeddingId, cachedVector, source) in embeddingList)
+                float employeeBest = 0f;
+                string? employeeBestSource = null;
+                foreach (var (_, cachedVector, source) in embeddingList)
                 {
                     float similarity = ComputeCosineSimilarity(embeddingVector, cachedVector);
-
-                    if (similarity > bestSimilarity)
+                    if (similarity > employeeBest)
                     {
-                        bestSimilarity = similarity;
-                        bestEmployeeId = employeeId;
-                        bestEmbeddingId = embeddingId;
-                        bestEmbeddingSource = source;
+                        employeeBest = similarity;
+                        employeeBestSource = source;
                     }
+                }
+
+                if (employeeBest > bestSimilarity)
+                {
+                    secondBestSimilarity = bestSimilarity;
+                    bestSimilarity = employeeBest;
+                    bestEmployeeId = employeeId;
+                    bestEmbeddingSource = employeeBestSource;
+                }
+                else if (employeeBest > secondBestSimilarity)
+                {
+                    secondBestSimilarity = employeeBest;
                 }
             }
 
-            // Check if the best match exceeds the threshold
             if (bestSimilarity >= SimilarityThreshold && bestEmployeeId >= 0)
             {
+                // Two employees almost equally similar: don't guess between them
+                if (bestSimilarity - secondBestSimilarity < AmbiguityMargin)
+                {
+                    var ambiguous = RecognitionResult.Unknown();
+                    ambiguous.Confidence = bestSimilarity;
+                    ambiguous.IsAmbiguous = true;
+                    return ambiguous;
+                }
+
                 string? employeeName = employeeNameCache.TryGetValue(bestEmployeeId, out var name) ? name : null;
                 return RecognitionResult.Match(bestEmployeeId, employeeName ?? "Unknown", bestSimilarity, bestEmbeddingSource);
             }

@@ -408,6 +408,7 @@ public class YuNetFaceDetector : IFaceDetector
 
                 faces.Add(new DetectedFace
                 {
+                    IsFrontal = IsFrontal(landmarks, boxW),
                     BoundingBox = (boxX, boxY, boxW, boxH),
                     Confidence = score,
                     FaceImageData = aligned,
@@ -423,6 +424,23 @@ public class YuNetFaceDetector : IFaceDetector
         }
 
         return faces;
+    }
+
+    /// <summary>
+    /// A face looks at the camera when both eyes are clearly apart (inter-eye distance at least a
+    /// quarter of the face width; about 0.4 when frontal, near 0 in profile) and the nose tip lies
+    /// between the eyes horizontally.
+    /// </summary>
+    private static bool IsFrontal(Point2f[] landmarks, int faceWidth)
+    {
+        var (rightEye, leftEye, nose) = (landmarks[0], landmarks[1], landmarks[2]);
+        float eyeDistance = MathF.Abs(leftEye.X - rightEye.X);
+        if (faceWidth <= 0 || eyeDistance / faceWidth < 0.25f)
+            return false;
+
+        float minX = MathF.Min(leftEye.X, rightEye.X), maxX = MathF.Max(leftEye.X, rightEye.X);
+        float margin = eyeDistance * 0.1f;
+        return nose.X > minX + margin && nose.X < maxX - margin;
     }
 
     /// <summary>

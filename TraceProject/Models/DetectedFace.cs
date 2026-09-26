@@ -43,4 +43,11 @@ public class DetectedFace
     /// Copied from the source frame's TimestampUtc.
     /// </summary>
     public required DateTime DetectionTimestampUtc { get; init; }
+
+    /// <summary>
+    /// Whether the face looks at the camera (from the detector's eye/nose landmarks).
+    /// Side profiles give unreliable embeddings and are not used for recognition or enrollment.
+    /// Faces created from an existing crop (no landmarks) count as frontal.
+    /// </summary>
+    public bool IsFrontal { get; init; } = true;
 }

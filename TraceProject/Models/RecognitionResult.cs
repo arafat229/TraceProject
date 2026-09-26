@@ -50,6 +50,12 @@ public class RecognitionResult
     public float[]? Embedding { get; set; }
 
     /// <summary>
+    /// Above the threshold for two employees with nearly the same similarity: neither a match nor
+    /// a stranger, so it is ignored (no attendance, not saved as an unknown face).
+    /// </summary>
+    public bool IsAmbiguous { get; set; }
+
+    /// <summary>
     /// Create an "Unknown" result (no match found).
     /// </summary>
     public static RecognitionResult Unknown() => new()
