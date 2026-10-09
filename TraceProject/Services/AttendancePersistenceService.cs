@@ -6,6 +6,7 @@ using TraceProject.Data;
 using TraceProject.Hubs;
 using TraceProject.Models;
 using TraceProject.Services.Interfaces;
+using TraceProject.Workers;
 
 namespace TraceProject.Services;
 
@@ -22,6 +23,7 @@ public class AttendancePersistenceService : IAttendancePersistenceService
     private readonly ILogger<AttendancePersistenceService> logger;
     private readonly IHubContext<NotificationHub> hubContext;
     private readonly CameraOptions cameraOptions;
+    private readonly PresenceMonitor presenceMonitor;
 
     // Recognition runs several times per second; don't rewrite the check-out on every frame
     private static readonly TimeSpan CheckOutUpdateInterval = TimeSpan.FromMinutes(1);
@@ -30,12 +32,14 @@ public class AttendancePersistenceService : IAttendancePersistenceService
         ApplicationDbContext dbContext,
         ILogger<AttendancePersistenceService> logger,
         IHubContext<NotificationHub> hubContext,
-        IOptions<CameraOptions> cameraOptions)
+        IOptions<CameraOptions> cameraOptions,
+        PresenceMonitor presenceMonitor)
     {
         this.dbContext = dbContext;
         this.logger = logger;
         this.hubContext = hubContext;
         this.cameraOptions = cameraOptions.Value;
+        this.presenceMonitor = presenceMonitor;
     }
 
     public async Task<Attendance?> PersistRecognitionResultAsync(
@@ -111,6 +115,9 @@ public class AttendancePersistenceService : IAttendancePersistenceService
 
             logger.LogInformation("Check-in: {EmployeeName} at {LocationName} (similarity {Confidence:F3})",
                 employee.FullName, location.Place, result.Confidence);
+
+            // A check-in turns "Absent"/"Unverified" into a verified presence
+            presenceMonitor.Poke();
 
             await hubContext.Clients.All.SendAsync("EmployeeCheckedIn", new
             {

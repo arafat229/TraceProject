@@ -245,6 +245,11 @@ try
     builder.Services.AddScoped<ActivityIngestionService>();
     builder.Services.AddHostedService<DeviceStatusWatcher>();
 
+    // Camera presence + computer activity combined (objective iii): PresenceChanged events
+    builder.Services.AddScoped<PresenceService>();
+    builder.Services.AddSingleton<PresenceMonitor>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<PresenceMonitor>());
+
     // Register attendance persistence service (Phase 5: Store recognition results as attendance)
     builder.Services.AddScoped<IAttendancePersistenceService, AttendancePersistenceService>();
 

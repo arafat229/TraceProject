@@ -14,8 +14,8 @@ An ASP.NET Core (.NET 10) Web API for employee attendance tracking through face 
 This is a research project. Its overall aim is a workforce monitoring system that combines AI smart cameras (tracking where workers physically are) with laptop activity monitoring, to improve transparency, accountability and productivity. The three specific objectives:
 
 1. **AI cameras detect and verify that employees are physically present at their workstations.** Mostly built: this is the video → recognition → attendance pipeline described below. It records daily check-in and check-out per camera location (one camera, "Main Entrance" by default), not presence at a particular desk.
-2. **A desktop monitoring app tracks computer usage, active applications, working time and idle time.** The agent and its backend are built (see "Desktop monitoring" below). The dashboard (`trace9-ui`) still has no device pairing page and no use of the summary or timeline endpoints.
-3. **One central system combines the camera and desktop data and updates in real time.** Partial. The hub broadcasts camera, attendance and `ActivityUpdated` events, but nothing yet links camera presence to computer activity.
+2. **A desktop monitoring app tracks computer usage, active applications, working time and idle time.** Built: the TraceAgent tray app plus its API (see "Desktop monitoring" below). The dashboard has a Devices page and an Activity Monitoring tab on each employee.
+3. **One central system combines the camera and desktop data and updates in real time.** Built (see "Presence" below): a combined status per employee, pushed live as `PresenceChanged`, plus a daily presence report.
 
 The deployment target is 2 to 4 laptops on the same local network as the server. Nothing is hosted online.
 
@@ -125,3 +125,30 @@ PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Cl
 - `Workers/DeviceStatusWatcher` sets the row to `Offline` after `OfflineAfterSeconds` without a report. `Offline` is a live state only; it is never stored as a session.
 - The dashboard reads `GET /api/Activities/employee/{id}/summary?date=yyyy-MM-dd` (active, idle and locked seconds, plus top apps) and `.../sessions?date=` (timeline). Time on several devices at the same moment is added up.
 - `TraceAgent/AgentApi.cs` keeps a **copy** of the contracts in `TraceProject/Dtos/AgentDtos.cs`. Change both together. Enums travel as numbers.
+
+## Presence (camera + computer combined)
+
+`Services/PresenceService.cs` (scoped) joins, per active employee and server-local work day:
+- today's `Attendance` row (the camera check-in, with `CheckOut` = last recognition)
+- the live `Activity` row (computer state)
+- that day's `ActivitySessions`
+
+`PresenceService.StatusOf` is the single rule:
+
+| Camera check-in today | Computer state | Status |
+|---|---|---|
+| yes | Active | `Working` |
+| yes | Idle or Locked | `PresentIdle` |
+| yes | Offline or none | `PresentNoComputer` |
+| no | Active | `Unverified` |
+| no | anything else | `Absent` |
+
+**Endpoints.**
+- `GET /api/Presence` returns the live board.
+- `GET /api/Presence/daily?date=` returns one row per employee with an outcome (`Verified` / `PresentNoComputer` / `UnverifiedComputerUse` / `Absent`) and `VerifiedActiveSeconds`: active computer time after the camera check-in.
+
+**Live updates.**
+- `Workers/PresenceMonitor` (a singleton `BackgroundService`) keeps the last status per employee and broadcasts `PresenceChanged` `{employeeId, employeeName, status, previousStatus, ...}` on every change.
+- It recomputes every 15 s, which covers manual attendance edits and midnight, and immediately when `Poke()`d. `AttendancePersistenceService` (check-in), `ActivityIngestionService` (state or app change) and `DeviceStatusWatcher` (offline) call `Poke()`.
+- Its first pass only records statuses and broadcasts nothing.
+- Statuses are computed, never stored: change the rule in `StatusOf` and every view follows.

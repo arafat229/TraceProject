@@ -17,6 +17,7 @@ public class DeviceStatusWatcher(
     IServiceScopeFactory scopeFactory,
     IHubContext<NotificationHub> hubContext,
     IOptions<ActivityMonitoringOptions> options,
+    PresenceMonitor presenceMonitor,
     ILogger<DeviceStatusWatcher> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -63,5 +64,6 @@ public class DeviceStatusWatcher(
             logger.LogInformation("Employee {employeeId} computer went offline (last report {lastSeen:u})", activity.EmployeeId, activity.LastSeenAt);
             await ActivityIngestionService.BroadcastAsync(hubContext, logger, activity, deviceId: null);
         }
+        presenceMonitor.Poke();
     }
 }

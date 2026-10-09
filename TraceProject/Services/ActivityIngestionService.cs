@@ -4,6 +4,7 @@ using TraceProject.Data;
 using TraceProject.Dtos;
 using TraceProject.Hubs;
 using TraceProject.Models;
+using TraceProject.Workers;
 
 namespace TraceProject.Services;
 
@@ -14,6 +15,7 @@ namespace TraceProject.Services;
 public class ActivityIngestionService(
     ApplicationDbContext dbContext,
     IHubContext<NotificationHub> hubContext,
+    PresenceMonitor presenceMonitor,
     ILogger<ActivityIngestionService> logger)
 {
     public const int MaxSessionsPerReport = 500;
@@ -102,7 +104,10 @@ public class ActivityIngestionService(
         await dbContext.SaveChangesAsync(cancellation);
 
         if (changed)
+        {
             await BroadcastAsync(hubContext, logger, activity, deviceId);
+            presenceMonitor.Poke();
+        }
 
         return sessions.Count;
     }
