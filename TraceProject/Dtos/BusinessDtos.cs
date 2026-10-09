@@ -63,7 +63,7 @@ public record AddActivityDto(long EmployeeId, bool IsActive, string? CurrentApp)
 
 public record UpdateActivityDto(bool IsActive, string? CurrentApp, DateTime? OffTime, DateTime? LockTime);
 
-public record ActivityDto(long Id, long EmployeeId, bool IsActive, string? CurrentApp, DateTime ActiveTime, DateTime OffTime, DateTime LockTime, string State, DateTime? LastSeenAt);
+public record ActivityDto(long Id, long EmployeeId, bool IsActive, string? CurrentApp, DateTime ActiveTime, DateTime OffTime, DateTime LockTime, string State, DateTime? LastSeenAt, string? OfflineReason);
 
 // FaceProfil DTOs
 public record AddFaceProfilDto(long EmployeeId, byte[]? RightProfile, byte[]? FrontProfile, byte[]? LeftProfile, byte[]? SmileProfile, byte[]? GlassesProfile);

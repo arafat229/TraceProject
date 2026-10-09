@@ -24,6 +24,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<SystemSetting> SystemSettings { get; set; } = null!;
     public DbSet<Device> Devices { get; set; } = null!;
     public DbSet<ActivitySession> ActivitySessions { get; set; } = null!;
+    public DbSet<AgentEvent> AgentEvents { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -127,6 +128,20 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             session.HasIndex(x => new { x.DeviceId, x.ClientId }).IsUnique();
             // Daily summaries and timelines
             session.HasIndex(x => new { x.EmployeeId, x.WorkDate });
+        });
+
+        builder.Entity<AgentEvent>(agentEvent =>
+        {
+            agentEvent
+                .HasOne(x => x.Device)
+                .WithMany()
+                .HasForeignKey(x => x.DeviceId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Upsert key for agent uploads (NULLs, i.e. server-side events, never collide in PostgreSQL)
+            agentEvent.HasIndex(x => new { x.DeviceId, x.ClientId }).IsUnique();
+            agentEvent.HasIndex(x => new { x.EmployeeId, x.WorkDate });
         });
 
         builder.Entity<Report>()

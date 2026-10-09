@@ -19,6 +19,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private StatusForm? statusForm;
     private bool configLoaded;
     private bool shutDown;
+    // Why the agent is stopping (sent to the server on exit); null when it is unpaired
+    private AgentEventKind? exitReason;
 
     public ActivityTracker Tracker { get; } = new();
     public Uploader Uploader { get; }
@@ -31,12 +33,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         marshal.CreateControl();
         Uploader = new Uploader(Tracker);
         Uploader.LoadQueue();
+        Tracker.RecordEvent(AgentEventKind.Started);
         api = new AgentApi(settings.ServerUrl!, settings.GetToken());
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Status…", null, (_, _) => ShowStatus());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => ExitThread());
+        menu.Items.Add("Exit", null, (_, _) => ConfirmExit());
 
         trayIcon = new NotifyIcon
         {
@@ -119,7 +122,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         uploadTimer.Stop();
         configTimer.Stop();
         Tracker.Suspend();
-        Tracker.Pending.Clear(); // the server no longer accepts them for this device
+        // The server no longer accepts them for this device
+        Tracker.Pending.Clear();
+        Tracker.PendingEvents.Clear();
         Uploader.SaveQueue();
 
         settings.SetToken(null);
@@ -136,11 +141,44 @@ internal sealed class TrayApplicationContext : ApplicationContext
         api = new AgentApi(settings.ServerUrl!, settings.GetToken());
         configLoaded = false;
         configTimer.Interval = 60_000;
+        Tracker.RecordEvent(AgentEventKind.Started);
         Tracker.Sample();
         sampleTimer.Start();
         uploadTimer.Start();
         configTimer.Start();
         _ = LoadConfigAsync();
+    }
+
+    /// <summary>Closing stops the monitoring, so say plainly that the administrator will see it.</summary>
+    private void ConfirmExit()
+    {
+        var answer = MessageBox.Show(
+            "Stop activity monitoring on this computer?\n\n" +
+            "Your administrator will see that TraceAgent was closed, and nothing is recorded until it is started again " +
+            "(it also starts automatically the next time you sign in to Windows).",
+            "TraceAgent", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes)
+            return;
+
+        exitReason = AgentEventKind.UserExit;
+        ExitThread();
+    }
+
+    /// <summary>
+    /// Sends what is queued right now, waiting at most <paramref name="timeout"/>. Used when the
+    /// process is about to stop or sleep, so it blocks instead of using the async timer path.
+    /// </summary>
+    private void FlushNow(TimeSpan timeout)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            Task.Run(() => Uploader.UploadAsync(api, cts.Token)).Wait(timeout + TimeSpan.FromSeconds(1));
+        }
+        catch (Exception)
+        {
+            // Unpaired or offline: whatever is left stays queued on disk
+        }
     }
 
     private void ShowStatus()
@@ -176,13 +214,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
             OnUiThread(() =>
             {
                 Tracker.Suspend();
+                Tracker.RecordEvent(AgentEventKind.Sleep);
+                // Windows gives a couple of seconds before sleeping; if this fails it is sent after wake-up
+                FlushNow(TimeSpan.FromSeconds(2));
                 Uploader.SaveQueue();
             });
         else if (e.Mode == PowerModes.Resume)
-            OnUiThread(() => Tracker.Sample());
+            OnUiThread(() =>
+            {
+                Tracker.RecordEvent(AgentEventKind.Resumed);
+                Tracker.Sample();
+                _ = UploadAsync();
+            });
     }
 
-    private void OnSessionEnding(object? sender, SessionEndingEventArgs e) => OnUiThread(ExitThread);
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e) => OnUiThread(() =>
+    {
+        exitReason = AgentEventKind.Shutdown;
+        ExitThread();
+    });
 
     private void OnUiThread(Action action)
     {
@@ -204,17 +254,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionEnding -= OnSessionEnding;
 
-            // Close the open session and make a short last attempt to send it
+            // Close the open session, say why we stop, and make a short last attempt to send it all.
+            // If the server is unreachable, the exit is delivered from disk on the next start.
             Tracker.Suspend();
-            try
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                Task.Run(() => Uploader.UploadAsync(api, cts.Token)).Wait(TimeSpan.FromSeconds(4));
-            }
-            catch (Exception)
-            {
-                // Unpaired or offline: whatever is left stays queued on disk
-            }
+            if (exitReason is { } reason)
+                Tracker.RecordEvent(reason);
+            FlushNow(TimeSpan.FromSeconds(3));
             Uploader.SaveQueue();
 
             trayIcon.Visible = false;

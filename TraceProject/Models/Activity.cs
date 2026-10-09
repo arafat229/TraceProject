@@ -23,5 +23,7 @@ namespace TraceProject.Models;
         public DateTime LockTime { get; set; }
         /// <summary>Last report from the agent; null for rows created manually.</summary>
         public DateTime? LastSeenAt { get; set; }
+        /// <summary>Why the computer is Offline (closed by the user, shut down, asleep, connection lost); null otherwise.</summary>
+        public AgentEventKind? OfflineReason { get; set; }
 
     }

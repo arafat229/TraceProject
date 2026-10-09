@@ -57,6 +57,7 @@ public class ActivitiesController : ControllerBase
             {
                 activity.IsActive = dto.IsActive;
                 activity.State = dto.IsActive ? ActivityState.Active : ActivityState.Idle;
+                activity.OfflineReason = null;
                 activity.CurrentApp = dto.CurrentApp;
                 activity.ActiveTime = DateTime.UtcNow;
                 dbContext.Update(activity);
@@ -73,7 +74,8 @@ public class ActivitiesController : ControllerBase
                 activity.OffTime,
                 activity.LockTime,
                 activity.State.ToString(),
-                activity.LastSeenAt)));
+                activity.LastSeenAt,
+                activity.OfflineReason.HasValue ? activity.OfflineReason.Value.ToString() : null)));
         }
         catch (Exception ex)
         {
@@ -102,7 +104,8 @@ public class ActivitiesController : ControllerBase
                     a.OffTime, 
                     a.LockTime,
                     State = a.State.ToString(),
-                    a.LastSeenAt
+                    a.LastSeenAt,
+                    OfflineReason = a.OfflineReason.HasValue ? a.OfflineReason.Value.ToString() : null
                 },
                 cancellation: cancellation);
 
@@ -136,7 +139,8 @@ public class ActivitiesController : ControllerBase
                 activity.OffTime,
                 activity.LockTime,
                 activity.State.ToString(),
-                activity.LastSeenAt);
+                activity.LastSeenAt,
+                activity.OfflineReason.HasValue ? activity.OfflineReason.Value.ToString() : null);
 
             return Ok(CallResult.Ok(data: dto));
         }
@@ -174,7 +178,8 @@ public class ActivitiesController : ControllerBase
                 activity.OffTime,
                 activity.LockTime,
                 activity.State.ToString(),
-                activity.LastSeenAt);
+                activity.LastSeenAt,
+                activity.OfflineReason.HasValue ? activity.OfflineReason.Value.ToString() : null);
 
             return Ok(CallResult.Ok(data: dto));
         }
@@ -197,6 +202,7 @@ public class ActivitiesController : ControllerBase
 
             activity.IsActive = dto.IsActive;
             activity.State = dto.IsActive ? ActivityState.Active : ActivityState.Idle;
+            activity.OfflineReason = null;
             activity.CurrentApp = dto.CurrentApp;
 
             if (dto.OffTime.HasValue)
@@ -217,7 +223,8 @@ public class ActivitiesController : ControllerBase
                 activity.OffTime,
                 activity.LockTime,
                 activity.State.ToString(),
-                activity.LastSeenAt)));
+                activity.LastSeenAt,
+                activity.OfflineReason.HasValue ? activity.OfflineReason.Value.ToString() : null)));
         }
         catch (Exception ex)
         {
@@ -338,6 +345,30 @@ public class ActivitiesController : ControllerBase
         catch (Exception ex)
         {
             logger.LogError(ex, "{action} failed: {error}", nameof(GetDailySessions), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    /// <summary>The day's agent lifecycle events (started, closed by the user, shutdown, sleep, connection lost).</summary>
+    [HttpGet("employee/{employeeId}/events")]
+    public async Task<IActionResult> GetDailyEvents(long employeeId, [FromQuery] DateOnly? date, CancellationToken cancellation)
+    {
+        try
+        {
+            var day = date ?? WorkDay.Today;
+            var events = await dbContext.AgentEvents.AsNoTracking()
+                .Where(e => e.EmployeeId == employeeId && e.WorkDate == day)
+                .OrderBy(e => e.At)
+                .Select(e => new { e.Id, e.DeviceId, e.Kind, e.At })
+                .ToListAsync(cancellation);
+
+            return Ok(CallResult.Ok(data: events
+                .Select(e => new AgentEventViewDto(e.Id, e.DeviceId, e.Kind.ToString(), e.At))
+                .ToList()));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetDailyEvents), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }

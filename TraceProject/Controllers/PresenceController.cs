@@ -55,4 +55,29 @@ public class PresenceController : ControllerBase
             return BadRequest(CallResult.Error(ex));
         }
     }
+
+    /// <summary>
+    /// Weekly / monthly report: per-employee totals and per-day totals over [from, to]
+    /// (yyyy-MM-dd, server-local work days, at most 93 days). Days after today are left out.
+    /// </summary>
+    [HttpGet("range")]
+    public async Task<IActionResult> GetRange([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellation)
+    {
+        try
+        {
+            if (to < from)
+                return BadRequest(CallResult.Error("'to' must not be before 'from'"));
+            if (to.DayNumber - from.DayNumber + 1 > PresenceService.MaxRangeDays)
+                return BadRequest(CallResult.Error($"A report covers at most {PresenceService.MaxRangeDays} days"));
+            if (from > WorkDay.Today)
+                return BadRequest(CallResult.Error("The period starts in the future"));
+
+            return Ok(CallResult.Ok(data: await presence.GetRangeAsync(from, to, cancellation)));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetRange), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
 }

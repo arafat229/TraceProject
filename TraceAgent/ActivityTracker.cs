@@ -28,6 +28,16 @@ internal sealed class ActivityTracker
     /// <summary>Finished sessions not yet accepted by the server, oldest first.</summary>
     public List<AgentSessionDto> Pending { get; } = new();
 
+    /// <summary>Lifecycle events (started, closed, shutdown, sleep, resumed) not yet accepted by the server.</summary>
+    public List<AgentEventDto> PendingEvents { get; } = new();
+
+    public void RecordEvent(AgentEventKind kind)
+    {
+        PendingEvents.Add(new AgentEventDto(Guid.NewGuid(), kind, DateTime.UtcNow));
+        if (PendingEvents.Count > 1000)
+            PendingEvents.RemoveRange(0, PendingEvents.Count - 1000);
+    }
+
     public ActivityState CurrentState => current?.State ?? (locked ? ActivityState.Locked : ActivityState.Active);
     public string? CurrentApp => current?.AppName;
     public string? CurrentTitle => current?.WindowTitle;

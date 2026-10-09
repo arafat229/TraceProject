@@ -32,7 +32,16 @@ public record AgentConfigDto(long DeviceId, string DeviceName, string EmployeeNa
 /// <summary>One session as the agent sees it; the open session is resent with a growing EndedAt.</summary>
 public record AgentSessionDto(Guid ClientId, ActivityState State, string? AppName, string? WindowTitle, DateTime StartedAt, DateTime EndedAt);
 
-public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion);
+/// <summary>An agent lifecycle event (started, closed by the user, shutdown, sleep, resumed).</summary>
+public record AgentEventDto(Guid ClientId, AgentEventKind Kind, DateTime At);
+
+/// <summary>
+/// When the newest event in a report is UserExit, Shutdown or Sleep, the agent is stopping:
+/// the computer is shown Offline at once, with that reason.
+/// </summary>
+public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion, List<AgentEventDto>? Events = null);
+
+public record AgentEventViewDto(long Id, long DeviceId, string Kind, DateTime At);
 
 // Dashboard: activity history
 public record ActivitySessionDto(long Id, long DeviceId, string State, string? AppName, string? WindowTitle, DateTime StartedAt, DateTime EndedAt, double Seconds);

@@ -75,10 +75,21 @@ public class ActivityIngestionService(
             }
         }
 
-        var state = report.CurrentState is ActivityState.Active or ActivityState.Idle or ActivityState.Locked
-            ? report.CurrentState
+        var newEvents = await AddEventsAsync(deviceId, employeeId, report.Events, now, cancellation);
+
+        // The newest event says whether the agent is stopping (closed, shutdown, sleep). Older events
+        // queued while offline are history only: a later Started/Resumed means it is running again.
+        var latestEvent = (report.Events ?? [])
+            .Where(e => Enum.IsDefined(e.Kind) && e.Kind != AgentEventKind.ConnectionLost)
+            .MaxBy(e => e.At);
+        AgentEventKind? stopReason = latestEvent?.Kind is AgentEventKind.UserExit or AgentEventKind.Shutdown or AgentEventKind.Sleep
+            ? latestEvent.Kind
+            : null;
+
+        var state = stopReason is not null ? ActivityState.Offline
+            : report.CurrentState is ActivityState.Active or ActivityState.Idle or ActivityState.Locked ? report.CurrentState
             : ActivityState.Active;
-        var currentApp = Truncate(report.CurrentApp, 128);
+        var currentApp = state == ActivityState.Offline ? null : Truncate(report.CurrentApp, 128);
 
         var activity = await dbContext.Activities.FirstOrDefaultAsync(a => a.EmployeeId == employeeId, cancellation);
         if (activity is null)
@@ -87,7 +98,7 @@ public class ActivityIngestionService(
             dbContext.Activities.Add(activity);
         }
 
-        var changed = activity.State != state || activity.CurrentApp != currentApp;
+        var changed = activity.State != state || activity.CurrentApp != currentApp || activity.OfflineReason != stopReason;
 
         if (state == ActivityState.Active)
             activity.ActiveTime = now;
@@ -99,6 +110,7 @@ public class ActivityIngestionService(
         activity.State = state;
         activity.IsActive = state == ActivityState.Active;
         activity.CurrentApp = currentApp;
+        activity.OfflineReason = stopReason;
         activity.LastSeenAt = now;
 
         await dbContext.SaveChangesAsync(cancellation);
@@ -109,7 +121,69 @@ public class ActivityIngestionService(
             presenceMonitor.Poke();
         }
 
+        // Closing the agent stops the monitoring: tell the dashboards (not for exits queued long ago)
+        var exit = newEvents.Where(e => e.Kind == AgentEventKind.UserExit && now - e.At < TimeSpan.FromMinutes(10)).MaxBy(e => e.At);
+        if (exit is not null)
+            await BroadcastAgentStoppedAsync(device, exit, cancellation);
+
         return sessions.Count;
+    }
+
+    /// <summary>Stores the report's lifecycle events not seen before; returns the new ones.</summary>
+    private async Task<List<AgentEvent>> AddEventsAsync(long deviceId, long employeeId, List<AgentEventDto>? events, DateTime now, CancellationToken cancellation)
+    {
+        var incoming = (events ?? [])
+            .Where(e => e.ClientId != Guid.Empty && Enum.IsDefined(e.Kind) && e.Kind != AgentEventKind.ConnectionLost)
+            .Select(e => e with { At = e.At.ToUniversalTime() })
+            .Where(e => e.At <= now + AllowedClockSkew)
+            .DistinctBy(e => e.ClientId)
+            .ToList();
+        if (incoming.Count == 0)
+            return [];
+
+        var clientIds = incoming.Select(e => (Guid?)e.ClientId).ToList();
+        var known = (await dbContext.AgentEvents
+                .Where(e => e.DeviceId == deviceId && clientIds.Contains(e.ClientId))
+                .Select(e => e.ClientId)
+                .ToListAsync(cancellation))
+            .ToHashSet();
+
+        var added = incoming
+            .Where(e => !known.Contains(e.ClientId))
+            .Select(e => new AgentEvent
+            {
+                DeviceId = deviceId,
+                EmployeeId = employeeId,
+                ClientId = e.ClientId,
+                Kind = e.Kind,
+                At = e.At,
+                WorkDate = WorkDay.Of(e.At),
+            })
+            .ToList();
+        dbContext.AgentEvents.AddRange(added);
+        return added;
+    }
+
+    private async Task BroadcastAgentStoppedAsync(Device device, AgentEvent exit, CancellationToken cancellation)
+    {
+        try
+        {
+            var employeeName = await dbContext.Employees.Where(e => e.Id == device.EmployeeId).Select(e => e.FullName).FirstOrDefaultAsync(cancellation);
+            logger.LogInformation("{employee} closed TraceAgent on {device}", employeeName, device.Name);
+            await hubContext.Clients.All.SendAsync("AgentStopped", new
+            {
+                device.EmployeeId,
+                EmployeeName = employeeName,
+                DeviceId = device.Id,
+                DeviceName = device.Name,
+                Reason = exit.Kind.ToString(),
+                exit.At,
+            }, cancellation);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to broadcast AgentStopped for device {deviceId}", device.Id);
+        }
     }
 
     /// <summary>Sends ActivityUpdated to every dashboard; never throws.</summary>
@@ -128,6 +202,7 @@ public class ActivityIngestionService(
                 activity.OffTime,
                 activity.LockTime,
                 activity.LastSeenAt,
+                OfflineReason = activity.OfflineReason?.ToString(),
             });
         }
         catch (Exception ex)

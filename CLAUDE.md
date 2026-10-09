@@ -126,6 +126,16 @@ PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Cl
 - The dashboard reads `GET /api/Activities/employee/{id}/summary?date=yyyy-MM-dd` (active, idle and locked seconds, plus top apps) and `.../sessions?date=` (timeline). Time on several devices at the same moment is added up.
 - `TraceAgent/AgentApi.cs` keeps a **copy** of the contracts in `TraceProject/Dtos/AgentDtos.cs`. Change both together. Enums travel as numbers.
 
+**Lifecycle events (exit detection).**
+- The agent records `AgentEvent`s and queues and persists them with its sessions (`pending.json` is `{Sessions, Events}`; a bare list from agent 1.0.0 is still read). The kinds are:
+  - `Started`
+  - `UserExit`: the tray **Exit**, which asks for confirmation first
+  - `Shutdown`: Windows `SessionEnding`
+  - `Sleep` and `Resumed`
+- They go in the last batch of a report. If the **newest** event is `UserExit`, `Shutdown` or `Sleep`, ingestion sets the live row to `Offline` with `Activity.OfflineReason` at once. A `UserExit` less than 10 minutes old also broadcasts `AgentStopped`. Events queued while offline are stored as history only.
+- `DeviceStatusWatcher` writes a server-side `ConnectionLost` event (`ClientId` null) for a silent device: killed, crashed, or the network gone.
+- `GET /api/Activities/employee/{id}/events?date=` lists a day's events.
+
 ## Presence (camera + computer combined)
 
 `Services/PresenceService.cs` (scoped) joins, per active employee and server-local work day:
@@ -145,7 +155,12 @@ PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Cl
 
 **Endpoints.**
 - `GET /api/Presence` returns the live board.
-- `GET /api/Presence/daily?date=` returns one row per employee with an outcome (`Verified` / `PresentNoComputer` / `UnverifiedComputerUse` / `Absent`) and `VerifiedActiveSeconds`: active computer time after the camera check-in.
+- `GET /api/Presence/daily?date=` returns one row per employee with an outcome (`Verified` / `PresentNoComputer` / `UnverifiedComputerUse` / `Absent`) and `VerifiedActiveSeconds`: active computer time after the camera check-in. Each row also has `IsLate` (Settings start time + grace, the same rule as the dashboard) and `AgentClosedByUser`.
+- `GET /api/Presence/range?from=&to=` is the week/month report (at most 93 days). It returns per-employee day counts, late days, average check-in, time totals and agent closes, plus per-day totals for charts.
+  - Days after today are dropped.
+  - **Absence counts Monday to Friday only** (`PresenceService.IsWorkingDay`).
+  - All periods share `BuildDay` over data loaded once by `LoadRangeAsync`.
+- The legacy Reports page and `ReportsController` only store metadata rows (type and dates). The actual reports are on the Presence page (Day / Week / Month).
 
 **Live updates.**
 - `Workers/PresenceMonitor` (a singleton `BackgroundService`) keeps the last status per employee and broadcasts `PresenceChanged` `{employeeId, employeeName, status, previousStatus, ...}` on every change.

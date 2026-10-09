@@ -52,6 +52,9 @@ namespace TraceProject.Migrations
                     b.Property<DateTime>("OffTime")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("OfflineReason")
+                        .HasColumnType("integer");
+
                     b.Property<int>("State")
                         .HasColumnType("integer");
 
@@ -108,6 +111,42 @@ namespace TraceProject.Migrations
                     b.HasIndex("EmployeeId", "WorkDate");
 
                     b.ToTable("ActivitySessions");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.AgentEvent", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("At")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ClientId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("DeviceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("EmployeeId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+
+                    b.Property<DateOnly>("WorkDate")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId", "ClientId")
+                        .IsUnique();
+
+                    b.HasIndex("EmployeeId", "WorkDate");
+
+                    b.ToTable("AgentEvents");
                 });
 
             modelBuilder.Entity("TraceProject.Models.Attendance", b =>
@@ -662,6 +701,17 @@ namespace TraceProject.Migrations
                 {
                     b.HasOne("TraceProject.Models.Device", "Device")
                         .WithMany("Sessions")
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Device");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.AgentEvent", b =>
+                {
+                    b.HasOne("TraceProject.Models.Device", "Device")
+                        .WithMany()
                         .HasForeignKey("DeviceId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

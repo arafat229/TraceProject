@@ -50,12 +50,33 @@ public class DeviceStatusWatcher(
         if (stale.Count == 0)
             return;
 
+        // The device that reported last is the one that went silent
+        var employeeIds = stale.Select(a => a.EmployeeId).ToList();
+        var lastDevice = (await dbContext.Devices.AsNoTracking()
+                .Where(d => employeeIds.Contains(d.EmployeeId) && d.LastSeenAt != null)
+                .Select(d => new { d.Id, d.EmployeeId, d.LastSeenAt })
+                .ToListAsync(cancellation))
+            .GroupBy(d => d.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.MaxBy(d => d.LastSeenAt)!.Id);
+
         foreach (var activity in stale)
         {
             if (activity.State == ActivityState.Active)
                 activity.OffTime = activity.LastSeenAt!.Value;
             activity.State = ActivityState.Offline;
             activity.IsActive = false;
+            // No goodbye from the agent: killed, crashed, laptop lid closed without sleep, or network gone
+            activity.OfflineReason = AgentEventKind.ConnectionLost;
+
+            if (lastDevice.TryGetValue(activity.EmployeeId, out var deviceId))
+                dbContext.AgentEvents.Add(new AgentEvent
+                {
+                    DeviceId = deviceId,
+                    EmployeeId = activity.EmployeeId,
+                    Kind = AgentEventKind.ConnectionLost,
+                    At = activity.LastSeenAt!.Value,
+                    WorkDate = WorkDay.Of(activity.LastSeenAt!.Value),
+                });
         }
         await dbContext.SaveChangesAsync(cancellation);
 
