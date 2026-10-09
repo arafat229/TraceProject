@@ -1,0 +1,50 @@
+using TraceProject.Models;
+
+namespace TraceProject.Dtos;
+
+// Admin side (dashboard): devices
+public record AddDeviceDto(long EmployeeId, string Name);
+
+public record DeviceDto(
+    long Id,
+    long EmployeeId,
+    string EmployeeName,
+    string Name,
+    string? MachineName,
+    string? AgentVersion,
+    bool IsPaired,
+    bool IsOnline,
+    bool IsActive,
+    DateTime? PairedAt,
+    DateTime? LastSeenAt);
+
+public record PairingCodeDto(long DeviceId, string PairingCode, DateTime ExpiresAt);
+
+public record DeviceActivationDto(bool Active);
+
+// Agent side (TraceAgent). TraceAgent/AgentApi.cs holds a copy of these contracts; keep them in sync.
+public record AgentPairDto(string PairingCode, string? MachineName, string? AgentVersion);
+
+public record AgentPairResultDto(long DeviceId, string EmployeeName, string DeviceToken);
+
+public record AgentConfigDto(long DeviceId, string DeviceName, string EmployeeName, int IdleThresholdSeconds, int ReportIntervalSeconds, bool CaptureWindowTitles);
+
+/// <summary>One session as the agent sees it; the open session is resent with a growing EndedAt.</summary>
+public record AgentSessionDto(Guid ClientId, ActivityState State, string? AppName, string? WindowTitle, DateTime StartedAt, DateTime EndedAt);
+
+public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion);
+
+// Dashboard: activity history
+public record ActivitySessionDto(long Id, long DeviceId, string State, string? AppName, string? WindowTitle, DateTime StartedAt, DateTime EndedAt, double Seconds);
+
+public record AppUsageDto(string AppName, double Seconds);
+
+public record ActivitySummaryDto(
+    long EmployeeId,
+    DateOnly Date,
+    double ActiveSeconds,
+    double IdleSeconds,
+    double LockedSeconds,
+    DateTime? FirstActivity,
+    DateTime? LastActivity,
+    List<AppUsageDto> TopApps);

@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using TraceProject.Data;
 using TraceProject.Dtos;
 using TraceProject.Models;
+using TraceProject.Services;
 using PaginationDto = HlkHelpers.PaginationDto;
 
 namespace TraceProject.Controllers;
@@ -43,6 +44,7 @@ public class ActivitiesController : ControllerBase
                 {
                     EmployeeId = dto.EmployeeId,
                     IsActive = dto.IsActive,
+                    State = dto.IsActive ? ActivityState.Active : ActivityState.Idle,
                     CurrentApp = dto.CurrentApp,
                     ActiveTime = DateTime.UtcNow,
                     OffTime = DateTime.UtcNow.AddHours(8),
@@ -54,6 +56,7 @@ public class ActivitiesController : ControllerBase
             else
             {
                 activity.IsActive = dto.IsActive;
+                activity.State = dto.IsActive ? ActivityState.Active : ActivityState.Idle;
                 activity.CurrentApp = dto.CurrentApp;
                 activity.ActiveTime = DateTime.UtcNow;
                 dbContext.Update(activity);
@@ -68,7 +71,9 @@ public class ActivitiesController : ControllerBase
                 activity.CurrentApp,
                 activity.ActiveTime,
                 activity.OffTime,
-                activity.LockTime)));
+                activity.LockTime,
+                activity.State.ToString(),
+                activity.LastSeenAt)));
         }
         catch (Exception ex)
         {
@@ -95,7 +100,9 @@ public class ActivitiesController : ControllerBase
                     a.CurrentApp, 
                     a.ActiveTime, 
                     a.OffTime, 
-                    a.LockTime 
+                    a.LockTime,
+                    State = a.State.ToString(),
+                    a.LastSeenAt
                 },
                 cancellation: cancellation);
 
@@ -127,7 +134,9 @@ public class ActivitiesController : ControllerBase
                 activity.CurrentApp,
                 activity.ActiveTime,
                 activity.OffTime,
-                activity.LockTime);
+                activity.LockTime,
+                activity.State.ToString(),
+                activity.LastSeenAt);
 
             return Ok(CallResult.Ok(data: dto));
         }
@@ -163,7 +172,9 @@ public class ActivitiesController : ControllerBase
                 activity.CurrentApp,
                 activity.ActiveTime,
                 activity.OffTime,
-                activity.LockTime);
+                activity.LockTime,
+                activity.State.ToString(),
+                activity.LastSeenAt);
 
             return Ok(CallResult.Ok(data: dto));
         }
@@ -185,6 +196,7 @@ public class ActivitiesController : ControllerBase
                 return NotFound(CallResult.Error("Activity not found"));
 
             activity.IsActive = dto.IsActive;
+            activity.State = dto.IsActive ? ActivityState.Active : ActivityState.Idle;
             activity.CurrentApp = dto.CurrentApp;
 
             if (dto.OffTime.HasValue)
@@ -203,7 +215,9 @@ public class ActivitiesController : ControllerBase
                 activity.CurrentApp,
                 activity.ActiveTime,
                 activity.OffTime,
-                activity.LockTime)));
+                activity.LockTime,
+                activity.State.ToString(),
+                activity.LastSeenAt)));
         }
         catch (Exception ex)
         {
@@ -245,6 +259,7 @@ public class ActivitiesController : ControllerBase
                 return NotFound(CallResult.Error("Activity not found"));
 
             activity.IsActive = false;
+            activity.State = ActivityState.Offline;
             activity.OffTime = DateTime.UtcNow;
 
             dbContext.Update(activity);
@@ -255,6 +270,74 @@ public class ActivitiesController : ControllerBase
         catch (Exception ex)
         {
             logger.LogError(ex, "{action} failed: {error}", nameof(DeactivateActivity), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    /// <summary>
+    /// Working (active), idle and locked time plus top apps for one day, from the agent's sessions.
+    /// <paramref name="date"/> is a server-local work day (yyyy-MM-dd); defaults to today.
+    /// Time on several devices at once is added up.
+    /// </summary>
+    [HttpGet("employee/{employeeId}/summary")]
+    public async Task<IActionResult> GetDailySummary(long employeeId, [FromQuery] DateOnly? date, CancellationToken cancellation)
+    {
+        try
+        {
+            var day = date ?? WorkDay.Today;
+            var sessions = await dbContext.ActivitySessions.AsNoTracking()
+                .Where(s => s.EmployeeId == employeeId && s.WorkDate == day)
+                .Select(s => new { s.State, s.AppName, s.StartedAt, s.EndedAt })
+                .ToListAsync(cancellation);
+
+            double SecondsIn(ActivityState state) =>
+                sessions.Where(s => s.State == state).Sum(s => (s.EndedAt - s.StartedAt).TotalSeconds);
+
+            var topApps = sessions
+                .Where(s => s.State == ActivityState.Active)
+                .GroupBy(s => s.AppName ?? "Unknown")
+                .Select(g => new AppUsageDto(g.Key, g.Sum(s => (s.EndedAt - s.StartedAt).TotalSeconds)))
+                .OrderByDescending(a => a.Seconds)
+                .Take(10)
+                .ToList();
+
+            return Ok(CallResult.Ok(data: new ActivitySummaryDto(
+                employeeId, day,
+                SecondsIn(ActivityState.Active),
+                SecondsIn(ActivityState.Idle),
+                SecondsIn(ActivityState.Locked),
+                sessions.Count > 0 ? sessions.Min(s => s.StartedAt) : null,
+                sessions.Count > 0 ? sessions.Max(s => s.EndedAt) : null,
+                topApps)));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetDailySummary), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    /// <summary>The day's sessions in time order, for a timeline view.</summary>
+    [HttpGet("employee/{employeeId}/sessions")]
+    public async Task<IActionResult> GetDailySessions(long employeeId, [FromQuery] DateOnly? date, CancellationToken cancellation)
+    {
+        try
+        {
+            var day = date ?? WorkDay.Today;
+            var sessions = await dbContext.ActivitySessions.AsNoTracking()
+                .Where(s => s.EmployeeId == employeeId && s.WorkDate == day)
+                .OrderBy(s => s.StartedAt)
+                .Select(s => new { s.Id, s.DeviceId, s.State, s.AppName, s.WindowTitle, s.StartedAt, s.EndedAt })
+                .ToListAsync(cancellation);
+
+            return Ok(CallResult.Ok(data: sessions
+                .Select(s => new ActivitySessionDto(s.Id, s.DeviceId, s.State.ToString(), s.AppName, s.WindowTitle,
+                    s.StartedAt, s.EndedAt, (s.EndedAt - s.StartedAt).TotalSeconds))
+                .ToList()));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetDailySessions), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
     }

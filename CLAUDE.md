@@ -4,11 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project layout
 
-ASP.NET Core (.NET 10) Web API for employee attendance tracking through face recognition on an RTSP camera feed. The solution file `TraceProject.slnx` references a single project, **`TraceProject/TraceProject.csproj`**. All live code is under `TraceProject/`.
+An ASP.NET Core (.NET 10) Web API for employee attendance tracking through face recognition on an RTSP camera feed, plus a desktop monitoring agent. `TraceProject.slnx` references two projects:
 
-The `Program.cs`, `Data/`, `Dto/`, `Helpers/`, `Hubs/`, `Models/` and `appsettings.json` at the **repo root** are leftovers from an earlier layout. Their `.csproj` has been deleted, so they are not compiled. Don't edit them by mistake. The same goes for `TraceProject-Backup.zip`.
+- **`TraceProject/TraceProject.csproj`**: the API.
+- **`TraceAgent/TraceAgent.csproj`**: the WinForms tray agent installed on employees' laptops.
 
-There is no test project. The many `PHASE*_*.md` / `*_GUIDE.md` files are AI-generated progress notes and may be out of date. Trust the code over them.
+### Project goals and where each one stands
+
+This is a research project. Its overall aim is a workforce monitoring system that combines AI smart cameras (tracking where workers physically are) with laptop activity monitoring, to improve transparency, accountability and productivity. The three specific objectives:
+
+1. **AI cameras detect and verify that employees are physically present at their workstations.** Mostly built: this is the video → recognition → attendance pipeline described below. It records daily check-in and check-out per camera location (one camera, "Main Entrance" by default), not presence at a particular desk.
+2. **A desktop monitoring app tracks computer usage, active applications, working time and idle time.** The agent and its backend are built (see "Desktop monitoring" below). The dashboard (`trace9-ui`) still has no device pairing page and no use of the summary or timeline endpoints.
+3. **One central system combines the camera and desktop data and updates in real time.** Partial. The hub broadcasts camera, attendance and `ActivityUpdated` events, but nothing yet links camera presence to computer activity.
+
+The deployment target is 2 to 4 laptops on the same local network as the server. Nothing is hosted online.
+
+The `Program.cs`, `Data/`, `Dto/`, `Helpers/`, `Hubs/`, `Models/` and `appsettings.json` at the **repo root** are leftovers from an earlier layout. Their `.csproj` has been deleted, so they are not compiled. Don't edit them by mistake. The same goes for `TraceProject-Backup.zip` and the empty `{Models,Data,...}` folder at the root, which was left by a failed shell brace expansion.
+
+The exception is **`TraceProject/TraceProject/Models/EmployeeAccess.cs`**. It sits in an odd nested folder, but it is live code: the SDK compiles every `.cs` under the project directory, and `ApplicationDbContext` maps it. Nothing else defines `EmployeeAccess`.
+
+The csproj still references `Microsoft.EntityFrameworkCore.Sqlite`, but only Npgsql is used.
+
+There is no test project and no CI (`.github/workflows/` is empty), so `dotnet build` is the only automated check. The many `PHASE*_*.md` / `*_GUIDE.md` files are AI-generated progress notes and may be out of date. Trust the code over them.
 
 ## Commands
 
@@ -17,9 +34,20 @@ Run these from `TraceProject/`, the project directory:
 ```powershell
 dotnet build
 dotnet run                     # http profile: http://localhost:5297 (https profile: https://localhost:7209)
+dotnet run --launch-profile lan   # http://0.0.0.0:5297, reachable by agents on other laptops
 dotnet ef migrations add <Name> --output-dir Data/Migrations
 dotnet ef database update
 ```
+
+The agent, run from the repo root:
+
+```powershell
+dotnet build TraceAgent
+# One exe to copy onto each laptop (Windows 10/11, no .NET needed):
+dotnet publish TraceAgent -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o TraceAgent/publish
+```
+
+Other laptops reach the API only if Windows Firewall on the server allows inbound TCP 5297.
 
 - Swagger UI is at `/swagger`. `TraceProject.http` holds sample requests.
 - Startup runs `Database.Migrate()` and `SeedData.Initialize`, which seeds `admin@trace.com` / `P@ssw0rd` when the Users table is empty. A failed DB connection is logged, and the app keeps running.
@@ -65,3 +93,35 @@ Each pipeline stage is configured through an options class in `Configuration/` b
 Models come from opencv_zoo: `face_detection_yunet_2023mar.onnx` runs through `cv::FaceDetectorYN` (it does YuNet decoding and NMS; OpenCvSharp has no `SetInputSize`, so the detector is recreated when the input size changes). `face_recognition_sface_2021dec.onnx` runs as a plain DNN net. OpenCvSharp doesn't expose `FaceRecognizerSF`, so the detector aligns each face to SFace's 112x112 five-landmark template itself. `DetectedFace.FaceImageData` is that aligned face as **raw packed BGR bytes**, not an encoded image. SFace input is raw 0–255 pixels with BGR→RGB (no mean/scale), and the match threshold is cosine ≥ 0.363 by default (OpenCV's recommended value; editable in Settings). Model files under 1 KB are treated as placeholders ("demo mode").
 
 PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Clients must send ISO dates with `Z` or an offset.
+
+## Desktop monitoring (TraceAgent)
+
+**Pairing.**
+1. An admin calls `POST /api/Devices` with `{employeeId, name}` and gets an 8-character pairing code that expires after `PairingCodeMinutes`.
+2. On the laptop, the agent's first-run `PairForm` sends the code to `POST /api/Agent/pair` and receives a device token.
+3. The server stores only the token's SHA-256 hash (`Device.TokenHash`). The agent stores the token DPAPI-encrypted in `%LOCALAPPDATA%\TraceAgent\settings.json` and adds itself to the HKCU `Run` key.
+
+`POST /api/Devices/{id}/pairing-code` issues a new code and **revokes the current token**. Deleting the device also cuts the agent off: on a 401 the agent clears its token and shows the pair form again. A **disabled** device still authenticates, but `POST /api/Agent/report` answers 403. The agent keeps its token, drops what it recorded and shows "paused", then resumes by itself once the device is re-enabled. Idle time is never dated back before the agent started sampling (at agent start or wake from sleep).
+
+**Two auth schemes.** `AgentController` accepts only `Authorization: Device <token>` (`Services/DeviceTokenAuthentication.cs`, scheme `DeviceTokenAuthenticationHandler.SchemeName` = "DeviceToken"). JWT stays the default for every other controller. Neither token works on the other side.
+
+**Sessions.**
+- `ActivityTracker` samples once a second:
+  - the foreground window (process `FileDescription`, falling back to the process name; Store apps use their title instead of `ApplicationFrameHost`)
+  - `GetLastInputInfo` idle time
+  - lock and unlock (`SystemEvents.SessionSwitch`)
+- It starts a new `ActivitySession` whenever the state (`Active`/`Idle`/`Locked`), the app or the title changes. Idle sessions carry no app or title.
+- Going idle is detected only after the threshold, so the active session is **backdated** to end at the last input. Sleep (a gap of more than 30 s between samples) or suspend closes the session where sampling stopped.
+
+**Upload.**
+- Every `ReportIntervalSeconds`, `Uploader` posts finished sessions plus the open one to `POST /api/Agent/report`. The open one is resent each time with a growing `EndedAt`.
+- The server upserts by `(DeviceId, ClientId)` and **overwrites `EndedAt`**, which may move backwards because of the backdating. Don't change that to "max".
+- Unsent sessions persist in `%LOCALAPPDATA%\TraceAgent\pending.json`.
+- The agent fetches `IdleThresholdSeconds`, `ReportIntervalSeconds` and `CaptureWindowTitles` from `GET /api/Agent/me`, so the `ActivityMonitoring` section on the server controls every agent.
+
+**Server side.**
+- `ActivityIngestionService` (scoped) stores sessions with `WorkDate = WorkDay.Of(StartedAt)`.
+- It updates the per-employee live `Activity` row (`State`, `IsActive`, `CurrentApp`, `LastSeenAt`, ...) and broadcasts `ActivityUpdated` only when the state or app changes.
+- `Workers/DeviceStatusWatcher` sets the row to `Offline` after `OfflineAfterSeconds` without a report. `Offline` is a live state only; it is never stored as a session.
+- The dashboard reads `GET /api/Activities/employee/{id}/summary?date=yyyy-MM-dd` (active, idle and locked seconds, plus top apps) and `.../sessions?date=` (timeline). Time on several devices at the same moment is added up.
+- `TraceAgent/AgentApi.cs` keeps a **copy** of the contracts in `TraceProject/Dtos/AgentDtos.cs`. Change both together. Enums travel as numbers.

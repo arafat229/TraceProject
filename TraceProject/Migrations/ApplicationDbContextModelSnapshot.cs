@@ -43,11 +43,17 @@ namespace TraceProject.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("LockTime")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime>("OffTime")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -55,6 +61,53 @@ namespace TraceProject.Migrations
                         .IsUnique();
 
                     b.ToTable("Activities");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.ActivitySession", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AppName")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("ClientId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("DeviceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("EmployeeId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("EndedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("WindowTitle")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<DateOnly>("WorkDate")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId", "ClientId")
+                        .IsUnique();
+
+                    b.HasIndex("EmployeeId", "WorkDate");
+
+                    b.ToTable("ActivitySessions");
                 });
 
             modelBuilder.Entity("TraceProject.Models.Attendance", b =>
@@ -183,6 +236,66 @@ namespace TraceProject.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Departments");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.Device", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AgentVersion")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("EmployeeId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("MachineName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("PairedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PairingCode")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("PairingCodeExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TokenHash")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("PairingCode");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("Devices");
                 });
 
             modelBuilder.Entity("TraceProject.Models.Employee", b =>
@@ -545,6 +658,17 @@ namespace TraceProject.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("TraceProject.Models.ActivitySession", b =>
+                {
+                    b.HasOne("TraceProject.Models.Device", "Device")
+                        .WithMany("Sessions")
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Device");
+                });
+
             modelBuilder.Entity("TraceProject.Models.Attendance", b =>
                 {
                     b.HasOne("TraceProject.Models.Camera", "Camera")
@@ -575,6 +699,17 @@ namespace TraceProject.Migrations
                     b.HasOne("TraceProject.Models.Location", null)
                         .WithMany("Cameras")
                         .HasForeignKey("LocationId");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.Device", b =>
+                {
+                    b.HasOne("TraceProject.Models.Employee", "Employee")
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Employee");
                 });
 
             modelBuilder.Entity("TraceProject.Models.Employee", b =>
@@ -667,6 +802,11 @@ namespace TraceProject.Migrations
             modelBuilder.Entity("TraceProject.Models.Department", b =>
                 {
                     b.Navigation("Employees");
+                });
+
+            modelBuilder.Entity("TraceProject.Models.Device", b =>
+                {
+                    b.Navigation("Sessions");
                 });
 
             modelBuilder.Entity("TraceProject.Models.Employee", b =>

@@ -22,6 +22,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<EmployeeAccess> EmployeeAccesses { get; set; } = null!;
     public DbSet<Activity> Activities { get; set; } = null!;
     public DbSet<SystemSetting> SystemSettings { get; set; } = null!;
+    public DbSet<Device> Devices { get; set; } = null!;
+    public DbSet<ActivitySession> ActivitySessions { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -91,6 +93,40 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             faceEmbedding.HasIndex(x => new { x.EmployeeId, x.IsActive });
             // Index for cache refresh queries
             faceEmbedding.HasIndex(x => x.IsActive);
+        });
+
+        builder.Entity<Device>(device =>
+        {
+            device
+                .HasOne(x => x.Employee)
+                .WithMany()
+                .HasForeignKey(x => x.EmployeeId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Cascade);
+
+            device.Property(x => x.Name).HasMaxLength(100);
+            device.Property(x => x.MachineName).HasMaxLength(100);
+            device.Property(x => x.AgentVersion).HasMaxLength(50);
+            device.HasIndex(x => x.TokenHash).IsUnique();
+            device.HasIndex(x => x.PairingCode);
+        });
+
+        builder.Entity<ActivitySession>(session =>
+        {
+            session
+                .HasOne(x => x.Device)
+                .WithMany(x => x.Sessions)
+                .HasForeignKey(x => x.DeviceId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Cascade);
+
+            session.Property(x => x.AppName).HasMaxLength(128);
+            session.Property(x => x.WindowTitle).HasMaxLength(512);
+
+            // Upsert key for agent uploads
+            session.HasIndex(x => new { x.DeviceId, x.ClientId }).IsUnique();
+            // Daily summaries and timelines
+            session.HasIndex(x => new { x.EmployeeId, x.WorkDate });
         });
 
         builder.Entity<Report>()

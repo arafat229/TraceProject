@@ -127,7 +127,10 @@ try
               }
           };
 
-      });
+      })
+      // Desktop agent (TraceAgent): "Authorization: Device <token>", only accepted by AgentController
+      .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, DeviceTokenAuthenticationHandler>(
+          DeviceTokenAuthenticationHandler.SchemeName, null);
 
 
     builder.Services.AddAuthorization();
@@ -170,6 +173,7 @@ try
     builder.Services.Configure<ConnectionOptions>(builder.Configuration.GetSection("Connection"));
     builder.Services.Configure<FaceDetectionOptions>(builder.Configuration.GetSection("FaceDetection"));
     builder.Services.Configure<FaceRecognitionOptions>(builder.Configuration.GetSection("FaceRecognition"));
+    builder.Services.Configure<ActivityMonitoringOptions>(builder.Configuration.GetSection("ActivityMonitoring"));
 
     // Both hosted services are wrapped in SafeHostedServiceWrapper. They are registered with
     // AddSingleton<IHostedService> because AddHostedService de-duplicates by implementation
@@ -236,6 +240,10 @@ try
     builder.Services.AddScoped<FaceEnrollmentService>();  // For enrollment operations
     builder.Services.AddSingleton<SystemSettingsService>();  // Settings page values, cached in memory
     builder.Services.AddSingleton<UnknownFaceService>();     // Saves unmatched faces for review
+
+    // Desktop monitoring agent: report ingestion, and Offline detection for silent devices
+    builder.Services.AddScoped<ActivityIngestionService>();
+    builder.Services.AddHostedService<DeviceStatusWatcher>();
 
     // Register attendance persistence service (Phase 5: Store recognition results as attendance)
     builder.Services.AddScoped<IAttendancePersistenceService, AttendancePersistenceService>();

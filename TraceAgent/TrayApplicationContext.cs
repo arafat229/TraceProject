@@ -1,0 +1,228 @@
+using Microsoft.Win32;
+
+namespace TraceAgent;
+
+/// <summary>
+/// The running agent: a tray icon, a 1-second sampling timer and a periodic upload.
+/// Everything runs on the UI thread; SystemEvents callbacks are marshalled onto it.
+/// </summary>
+internal sealed class TrayApplicationContext : ApplicationContext
+{
+    private readonly AgentSettings settings;
+    private readonly Control marshal = new();
+    private readonly NotifyIcon trayIcon;
+    private readonly System.Windows.Forms.Timer sampleTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer uploadTimer = new() { Interval = 15_000 };
+    private readonly System.Windows.Forms.Timer configTimer = new() { Interval = 60_000 };
+
+    private AgentApi api;
+    private StatusForm? statusForm;
+    private bool configLoaded;
+    private bool shutDown;
+
+    public ActivityTracker Tracker { get; } = new();
+    public Uploader Uploader { get; }
+    public string? EmployeeName => settings.EmployeeName;
+    public string? ServerUrl => settings.ServerUrl;
+
+    public TrayApplicationContext(AgentSettings settings)
+    {
+        this.settings = settings;
+        marshal.CreateControl();
+        Uploader = new Uploader(Tracker);
+        Uploader.LoadQueue();
+        api = new AgentApi(settings.ServerUrl!, settings.GetToken());
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Status…", null, (_, _) => ShowStatus());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) => ExitThread());
+
+        trayIcon = new NotifyIcon
+        {
+            Icon = SystemIcons.Shield,
+            Text = "TraceAgent – activity monitoring is on",
+            ContextMenuStrip = menu,
+            Visible = true,
+        };
+        trayIcon.DoubleClick += (_, _) => ShowStatus();
+
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionEnding += OnSessionEnding;
+
+        sampleTimer.Tick += (_, _) => Tracker.Sample();
+        uploadTimer.Tick += async (_, _) => await UploadAsync();
+        configTimer.Tick += async (_, _) => await LoadConfigAsync();
+
+        Tracker.Sample();
+        sampleTimer.Start();
+        uploadTimer.Start();
+        configTimer.Start();
+        _ = LoadConfigAsync();
+
+        trayIcon.ShowBalloonTip(5000, "TraceAgent",
+            $"Activity monitoring is on for {settings.EmployeeName}. Double-click the shield icon to see what is recorded.",
+            ToolTipIcon.Info);
+    }
+
+    private async Task LoadConfigAsync()
+    {
+        try
+        {
+            var config = await api.GetConfigAsync();
+            Tracker.IdleThreshold = TimeSpan.FromSeconds(config.IdleThresholdSeconds);
+            Tracker.CaptureWindowTitles = config.CaptureWindowTitles;
+            uploadTimer.Interval = config.ReportIntervalSeconds * 1000;
+            settings.EmployeeName = config.EmployeeName;
+
+            // Once loaded, re-check every 10 minutes for setting changes; until then, every minute
+            if (!configLoaded)
+            {
+                configLoaded = true;
+                configTimer.Interval = 10 * 60_000;
+                settings.Save();
+            }
+        }
+        catch (UnpairedException)
+        {
+            HandleUnpaired();
+        }
+        catch (Exception)
+        {
+            // Server unreachable: keep the defaults and try again on the next tick
+        }
+    }
+
+    private async Task UploadAsync()
+    {
+        try
+        {
+            await Uploader.UploadAsync(api);
+            trayIcon.Text = Uploader.IsDisabled ? "TraceAgent – paused by the administrator"
+                : Uploader.LastError is null ? "TraceAgent – activity monitoring is on"
+                : "TraceAgent – server unreachable, saving locally";
+        }
+        catch (UnpairedException)
+        {
+            HandleUnpaired();
+        }
+    }
+
+    /// <summary>The administrator removed or re-paired this device: stop and ask for a new code.</summary>
+    private void HandleUnpaired()
+    {
+        if (shutDown || !sampleTimer.Enabled)
+            return;
+
+        sampleTimer.Stop();
+        uploadTimer.Stop();
+        configTimer.Stop();
+        Tracker.Suspend();
+        Tracker.Pending.Clear(); // the server no longer accepts them for this device
+        Uploader.SaveQueue();
+
+        settings.SetToken(null);
+        settings.Save();
+
+        using var pairForm = new PairForm(settings);
+        if (pairForm.ShowDialog() != DialogResult.OK)
+        {
+            ExitThread();
+            return;
+        }
+
+        api.Dispose();
+        api = new AgentApi(settings.ServerUrl!, settings.GetToken());
+        configLoaded = false;
+        configTimer.Interval = 60_000;
+        Tracker.Sample();
+        sampleTimer.Start();
+        uploadTimer.Start();
+        configTimer.Start();
+        _ = LoadConfigAsync();
+    }
+
+    private void ShowStatus()
+    {
+        if (statusForm is { IsDisposed: false })
+        {
+            statusForm.Activate();
+            return;
+        }
+        statusForm = new StatusForm(this);
+        statusForm.Show();
+    }
+
+    private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        bool? locked = e.Reason switch
+        {
+            SessionSwitchReason.SessionLock or SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteDisconnect => true,
+            SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect or SessionSwitchReason.RemoteConnect => false,
+            _ => null,
+        };
+        if (locked is { } value)
+            OnUiThread(() =>
+            {
+                Tracker.SetLocked(value);
+                _ = UploadAsync(); // tell the dashboard right away
+            });
+    }
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Suspend)
+            OnUiThread(() =>
+            {
+                Tracker.Suspend();
+                Uploader.SaveQueue();
+            });
+        else if (e.Mode == PowerModes.Resume)
+            OnUiThread(() => Tracker.Sample());
+    }
+
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e) => OnUiThread(ExitThread);
+
+    private void OnUiThread(Action action)
+    {
+        if (marshal.InvokeRequired)
+            marshal.BeginInvoke(action);
+        else
+            action();
+    }
+
+    protected override void ExitThreadCore()
+    {
+        if (!shutDown)
+        {
+            shutDown = true;
+            sampleTimer.Stop();
+            uploadTimer.Stop();
+            configTimer.Stop();
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
+
+            // Close the open session and make a short last attempt to send it
+            Tracker.Suspend();
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                Task.Run(() => Uploader.UploadAsync(api, cts.Token)).Wait(TimeSpan.FromSeconds(4));
+            }
+            catch (Exception)
+            {
+                // Unpaired or offline: whatever is left stays queued on disk
+            }
+            Uploader.SaveQueue();
+
+            trayIcon.Visible = false;
+            trayIcon.Dispose();
+            statusForm?.Close();
+            api.Dispose();
+            marshal.Dispose();
+        }
+        base.ExitThreadCore();
+    }
+}
