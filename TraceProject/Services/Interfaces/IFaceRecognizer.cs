@@ -63,4 +63,16 @@ public interface IFaceRecognizer : IAsyncDisposable
     /// </summary>
     /// <returns>A tuple of (total embeddings cached, total employees with embeddings, last refresh time).</returns>
     (int TotalEmbeddings, int EmployeesWithEmbeddings, DateTime LastRefreshUtc) GetCacheStatistics();
+
+    /// <summary>
+    /// How an embedding (from ComputeEmbeddingAsync) compares with the enrolled faces: the best
+    /// similarity to <paramref name="employeeId"/>'s own faces and to the closest other employee.
+    /// Used before enrolling, so a face that already looks like someone else is refused.
+    /// </summary>
+    GalleryComparison CompareWithGallery(byte[] embedding, long employeeId);
 }
+
+/// <param name="OwnBest">Best similarity to the employee's own enrolled faces; null when they have none.</param>
+/// <param name="OtherBest">Best similarity to any other employee's face (0 when there are none).</param>
+/// <param name="Threshold">The current recognition threshold (Settings).</param>
+public record GalleryComparison(float? OwnBest, long? OtherEmployeeId, string? OtherEmployeeName, float OtherBest, float Threshold);

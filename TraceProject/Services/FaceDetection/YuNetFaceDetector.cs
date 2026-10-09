@@ -406,16 +406,20 @@ public class YuNetFaceDetector : IFaceDetector
                 if (aligned is null)
                     continue;
 
-                faces.Add(new DetectedFace
+                var face = new DetectedFace
                 {
                     IsFrontal = IsFrontal(landmarks, boxW),
                     BoundingBox = (boxX, boxY, boxW, boxH),
                     Confidence = score,
-                    FaceImageData = aligned,
+                    FaceImageData = aligned.Value.Pixels,
                     FaceImageWidth = AlignedFaceSize,
                     FaceImageHeight = AlignedFaceSize,
-                    DetectionTimestampUtc = frame.TimestampUtc
-                });
+                    DetectionTimestampUtc = frame.TimestampUtc,
+                    CutOffFraction = aligned.Value.CutOff,
+                    Sharpness = aligned.Value.Sharpness,
+                };
+                face.RecognitionProblem = FaceQuality.RecognitionProblem(face, options);
+                faces.Add(face);
             }
         }
         catch (Exception ex)
@@ -445,9 +449,15 @@ public class YuNetFaceDetector : IFaceDetector
 
     /// <summary>
     /// Warp the face so its 5 landmarks match SFace's template (same idea as
-    /// cv::FaceRecognizerSF::alignCrop). Returns 112x112 BGR pixels, or null on failure.
+    /// cv::FaceRecognizerSF::alignCrop). Returns 112x112 BGR pixels, the share of them that fell
+    /// outside the picture, and their sharpness; null on failure.
     /// </summary>
-    private static byte[]? AlignFace(Mat image, Point2f[] landmarks)
+    /// <remarks>
+    /// LMEDS was compared with a least-squares (Umeyama) fit on 174 real faces from this camera:
+    /// no accuracy difference (mean best match 0.361 vs 0.360), so it stays, keeping new faces
+    /// consistent with the embeddings already enrolled.
+    /// </remarks>
+    private static (byte[] Pixels, double CutOff, double Sharpness)? AlignFace(Mat image, Point2f[] landmarks)
     {
         using var src = InputArray.Create(landmarks);
         using var dst = InputArray.Create(AlignmentTemplate);
@@ -455,12 +465,19 @@ public class YuNetFaceDetector : IFaceDetector
         if (transform is null || transform.Empty())
             return null;
 
+        var size = new Size(AlignedFaceSize, AlignedFaceSize);
         using var aligned = new Mat();
-        Cv2.WarpAffine(image, aligned, transform, new Size(AlignedFaceSize, AlignedFaceSize));
+        Cv2.WarpAffine(image, aligned, transform, size);
+
+        // Warp an all-white mask the same way: what stays black came from outside the frame
+        using var inside = new Mat(image.Rows, image.Cols, MatType.CV_8UC1, Scalar.All(255));
+        using var insideAligned = new Mat();
+        Cv2.WarpAffine(inside, insideAligned, transform, size, InterpolationFlags.Nearest, BorderTypes.Constant, Scalar.All(0));
+        double cutOff = 1.0 - Cv2.CountNonZero(insideAligned) / (double)(AlignedFaceSize * AlignedFaceSize);
 
         var bytes = new byte[AlignedFaceSize * AlignedFaceSize * 3];
         Marshal.Copy(aligned.Data, bytes, 0, bytes.Length);
-        return bytes;
+        return (bytes, cutOff, FaceQuality.Sharpness(aligned));
     }
 
     public async ValueTask DisposeAsync()

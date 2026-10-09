@@ -1,5 +1,7 @@
 using TraceProject.Data;
 using TraceProject.Models;
+using Microsoft.EntityFrameworkCore;
+using TraceProject.Services.FaceDetection;
 using TraceProject.Services.Interfaces;
 
 namespace TraceProject.Services.FaceRecognition;
@@ -55,12 +57,13 @@ public class FaceEnrollmentService
 
         // The enrolled person should be the one closest to the camera, looking at it
         var face = faces.OrderByDescending(f => f.BoundingBox.Width * f.BoundingBox.Height).First();
-        if (!face.IsFrontal)
-            return EnrollmentResult.Failed("The face is turned sideways. Enroll a face looking straight at the camera — side profiles cause mix-ups between people.");
-        var embedding = await EnrollDetectedFaceAsync(employeeId, face, source, cancellationToken);
-        return embedding is null
-            ? EnrollmentResult.Failed("Could not compute a face embedding for this image.")
-            : new EnrollmentResult(embedding, faces.Count > 1 ? $"{faces.Count} faces found; enrolled the largest one." : null);
+        if (FaceQuality.EnrollmentProblem(face) is { } problem)
+            return EnrollmentResult.Failed(problem);
+
+        var result = await EnrollCropAsync(employeeId, face.FaceImageData, face.FaceImageWidth, face.FaceImageHeight, source, cancellationToken);
+        if (result.Embedding is not null && faces.Count > 1)
+            return result with { Error = JoinNotes($"{faces.Count} faces found; enrolled the largest one.", result.Error) };
+        return result;
     }
 
     /// <summary>
@@ -80,78 +83,79 @@ public class FaceEnrollmentService
             return EnrollmentResult.Failed("The stored face image could not be decoded.");
 
         var (bgr, width, height) = decoded.Value;
-        var embedding = await EnrollFaceFromCropAsync(employeeId, bgr, width, height, source, cancellationToken);
-        return embedding is null
-            ? EnrollmentResult.Failed("Could not compute a face embedding for this face.")
-            : new EnrollmentResult(embedding, null);
+        // No detection data for a stored crop: judge it by its pixels (black = outside the picture)
+        var (sharpness, blackFraction) = FaceQuality.MeasureCrop(bgr, width, height);
+        if (FaceQuality.CropProblem(blackFraction, sharpness) is { } problem)
+            return EnrollmentResult.Failed(problem);
+
+        return await EnrollCropAsync(employeeId, bgr, width, height, source, cancellationToken);
     }
 
+    // A new face this close to another employee (just under the match threshold) is enrolled with a warning
+    private const float NearOtherEmployeeMargin = 0.05f;
+    // Below this, the face hardly resembles the employee's other enrolled faces
+    private const float MinOwnSimilarity = 0.2f;
+
     /// <summary>
-    /// Enroll an employee's face by computing an embedding from face crop image data.
-    /// Creates a FaceEmbedding record and stores it in the database.
-    /// Can be called multiple times for different enrollment photos/angles.
+    /// Computes the embedding of an aligned face, refuses it when it already matches another
+    /// employee (enrolling it would make the two be confused), and stores it. Warnings
+    /// (close to someone else, unlike the employee's other faces) come back in Error.
     /// </summary>
-    /// <param name="employeeId">The employee to enroll.</param>
-    /// <param name="faceImageData">Raw BGR image bytes of the face crop (112x112 or larger).</param>
-    /// <param name="faceImageWidth">Width of the face image.</param>
-    /// <param name="faceImageHeight">Height of the face image.</param>
-    /// <param name="source">Optional source descriptor (e.g., "front_profile_enrollment_20250922").</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The created FaceEmbedding, or null if enrollment failed.</returns>
-    public async Task<FaceEmbedding?> EnrollFaceFromCropAsync(
-        long employeeId,
-        byte[] faceImageData,
-        int faceImageWidth,
-        int faceImageHeight,
-        string? source = null,
-        CancellationToken cancellationToken = default)
+    private async Task<EnrollmentResult> EnrollCropAsync(long employeeId, byte[] bgr, int width, int height, string? source, CancellationToken cancellationToken)
     {
-        if (!recognizer.IsReady)
-        {
-            logger.LogError("Face recognizer not ready for enrollment");
-            return null;
-        }
+        var employee = await dbContext.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken);
+        if (employee is null)
+            return EnrollmentResult.Failed("Employee not found.");
 
-        if (faceImageData == null || faceImageData.Length == 0)
+        var crop = new DetectedFace
         {
-            logger.LogError("Face image data is empty");
-            return null;
-        }
-
-        // Create a temporary DetectedFace from the crop
-        var detectedFace = new DetectedFace
-        {
-            BoundingBox = (0, 0, faceImageWidth, faceImageHeight),
+            BoundingBox = (0, 0, width, height),
             Confidence = 1.0f,
-            FaceImageData = faceImageData,
-            FaceImageWidth = faceImageWidth,
-            FaceImageHeight = faceImageHeight,
+            FaceImageData = bgr,
+            FaceImageWidth = width,
+            FaceImageHeight = height,
             DetectionTimestampUtc = DateTime.UtcNow
         };
+        var embeddingBytes = await recognizer.ComputeEmbeddingAsync(crop, cancellationToken);
+        if (embeddingBytes is null || embeddingBytes.Length == 0)
+            return EnrollmentResult.Failed("Could not compute a face embedding for this face.");
 
+        var comparison = recognizer.CompareWithGallery(embeddingBytes, employeeId);
+        if (comparison.OtherEmployeeId is not null && comparison.OtherBest >= comparison.Threshold)
+        {
+            logger.LogWarning("Enrollment for {employee} refused: matches {other} ({similarity:F3})",
+                employee.FullName, comparison.OtherEmployeeName, comparison.OtherBest);
+            return EnrollmentResult.Failed(
+                $"This face already matches {comparison.OtherEmployeeName} (similarity {comparison.OtherBest:F2}, match threshold {comparison.Threshold:F2}). " +
+                $"Enrolling it for {employee.FullName} would make the two be confused. Check that the right person is in front of the camera.");
+        }
+
+        var warnings = new List<string>();
+        if (comparison.OtherEmployeeId is not null && comparison.OtherBest >= comparison.Threshold - NearOtherEmployeeMargin)
+            warnings.Add($"This face is close to {comparison.OtherEmployeeName} (similarity {comparison.OtherBest:F2}); add more clear photos of {employee.FullName} to keep them apart.");
+        if (comparison.OwnBest is { } own && own < MinOwnSimilarity)
+            warnings.Add($"This face looks unlike {employee.FullName}'s other enrolled faces (similarity {own:F2}). Check it is the same person.");
+
+        var stored = await StoreEmbeddingAsync(employee, embeddingBytes, bgr, width, height, source, cancellationToken);
+        return stored is null
+            ? EnrollmentResult.Failed("The face could not be saved.")
+            : new EnrollmentResult(stored, warnings.Count > 0 ? string.Join(" ", warnings) : null);
+    }
+
+    private static string JoinNotes(string first, string? second) => second is null ? first : $"{first} {second}";
+
+    /// <summary>
+    /// Saves an embedding (with a JPEG thumbnail of the aligned face) and refreshes the recognizer
+    /// cache so the live pipeline uses it right away. Returns null if saving failed.
+    /// </summary>
+    private async Task<FaceEmbedding?> StoreEmbeddingAsync(
+        Employee employee, byte[] embeddingBytes, byte[] bgr, int width, int height, string? source, CancellationToken cancellationToken)
+    {
         try
         {
-            // Compute embedding using the recognizer's public API
-            var embeddingBytes = await recognizer.ComputeEmbeddingAsync(detectedFace, cancellationToken);
-
-            if (embeddingBytes == null || embeddingBytes.Length == 0)
-            {
-                logger.LogError("Failed to compute embedding for employee {employeeId}", employeeId);
-                return null;
-            }
-
-            // Verify employee exists
-            var employee = await dbContext.Employees.FindAsync(new object[] { employeeId }, cancellationToken: cancellationToken);
-            if (employee == null)
-            {
-                logger.LogError("Employee {employeeId} not found", employeeId);
-                return null;
-            }
-
-            // Create FaceEmbedding record
             var faceEmbedding = new FaceEmbedding
             {
-                EmployeeId = employeeId,
+                EmployeeId = employee.Id,
                 EmbeddingData = embeddingBytes,
                 ModelName = "SFace",
                 EmbeddingDimension = 128,
@@ -159,7 +163,7 @@ public class FaceEnrollmentService
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow,
                 Source = source,
-                FaceImage = FaceImageHelper.EncodeJpeg(faceImageData, faceImageWidth, faceImageHeight)
+                FaceImage = FaceImageHelper.EncodeJpeg(bgr, width, height)
             };
 
             dbContext.FaceEmbeddings.Add(faceEmbedding);
@@ -167,43 +171,16 @@ public class FaceEnrollmentService
 
             logger.LogInformation(
                 "✓ Enrolled face for employee {employeeId} ({employeeName}). Source: {source}",
-                employeeId, employee.FullName, source ?? "unknown");
+                employee.Id, employee.FullName, source ?? "unknown");
 
-            // Refresh recognizer cache to include the new embedding
             await recognizer.RefreshEmbeddingCacheAsync(cancellationToken);
-
             return faceEmbedding;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error enrolling face for employee {employeeId}", employeeId);
+            logger.LogError(ex, "Error enrolling face for employee {employeeId}", employee.Id);
             return null;
         }
-    }
-
-    /// <summary>
-    /// Enroll a detected face from the live camera stream.
-    /// Convenience method that takes a DetectedFace (output from Phase 3) and enrolls it.
-    /// </summary>
-    public async Task<FaceEmbedding?> EnrollDetectedFaceAsync(
-        long employeeId,
-        DetectedFace detectedFace,
-        string? source = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (detectedFace?.FaceImageData == null || detectedFace.FaceImageData.Length == 0)
-        {
-            logger.LogError("Detected face has no image data");
-            return null;
-        }
-
-        return await EnrollFaceFromCropAsync(
-            employeeId,
-            detectedFace.FaceImageData,
-            detectedFace.FaceImageWidth,
-            detectedFace.FaceImageHeight,
-            source,
-            cancellationToken);
     }
 
     /// <summary>

@@ -92,6 +92,24 @@ Each pipeline stage is configured through an options class in `Configuration/` b
 
 Models come from opencv_zoo: `face_detection_yunet_2023mar.onnx` runs through `cv::FaceDetectorYN` (it does YuNet decoding and NMS; OpenCvSharp has no `SetInputSize`, so the detector is recreated when the input size changes). `face_recognition_sface_2021dec.onnx` runs as a plain DNN net. OpenCvSharp doesn't expose `FaceRecognizerSF`, so the detector aligns each face to SFace's 112x112 five-landmark template itself. `DetectedFace.FaceImageData` is that aligned face as **raw packed BGR bytes**, not an encoded image. SFace input is raw 0–255 pixels with BGR→RGB (no mean/scale), and the match threshold is cosine ≥ 0.363 by default (OpenCV's recommended value; editable in Settings). Model files under 1 KB are treated as placeholders ("demo mode").
 
+**Face quality gates** (`Services/FaceDetection/FaceQuality.cs`). These keep bad faces out of recognition and out of the gallery.
+- **What the detector measures.** While aligning each face, the detector records:
+  - `DetectedFace.CutOffFraction`: the share of the aligned face that came from outside the frame, found by warping an all-white mask with the same transform.
+  - `Sharpness`: the variance of the Laplacian of the aligned face.
+- **Recognition gate.** The detector sets `RecognitionProblem` from the `FaceDetection` options. `FrameProcessingService` skips any face that has one, and the metrics log counts skips per reason. Faces are skipped for:
+  - a side profile
+  - score < `MinRecognitionScore` (0.85): YuNet also fires on hands and fabric (a hand scored 0.74 and came within 0.008 of matching an employee)
+  - size < 60 px
+  - cut-off > 15 %
+  - sharpness < 100
+- **Enrollment gate** (`EnrollmentProblem` / `CropProblem`), stricter: score ≥ 0.9, ≥ 80 px, cut-off ≤ 10 %, sharpness ≥ 400.
+- **Conflict check.** After that, `FaceEnrollmentService.EnrollCropAsync` calls `IFaceRecognizer.CompareWithGallery`.
+  - It **refuses** a face that already matches another employee at or above the threshold.
+  - It warns when the face is within 0.05 of that, or when it resembles the employee's own faces at less than 0.2.
+  - Warnings come back in `EnrollmentResult.Error` on a successful enroll.
+- **Gallery audit.** `GET /api/Employees/{id}/faces/audit` rates each enrolled face (`Good` / `Weak` / `CloseToOther` / `Unusable`) from its stored embedding and thumbnail. The Face Profiles tab shows the verdicts.
+- **Alignment stays LMEDS** (`EstimateAffinePartial2D`). A least-squares (Umeyama) fit was compared on 174 real faces and gave no gain; switching would also make new embeddings inconsistent with the enrolled ones.
+
 PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Clients must send ISO dates with `Z` or an offset.
 
 ## Desktop monitoring (TraceAgent)

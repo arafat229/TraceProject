@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TraceProject.Data;
 using TraceProject.Models;
+using TraceProject.Services;
+using TraceProject.Services.FaceDetection;
 using TraceProject.Services.FaceRecognition;
 using TraceProject.Services.Interfaces;
 using TraceProject.Services.VideoSources;
@@ -25,6 +27,7 @@ public class EmployeeFacesController : ControllerBase
     private readonly FaceEnrollmentService enrollmentService;
     private readonly IFaceRecognizer recognizer;
     private readonly IVideoSource videoSource;
+    private readonly SystemSettingsService settings;
     private readonly ILogger<EmployeeFacesController> logger;
 
     public EmployeeFacesController(
@@ -32,12 +35,14 @@ public class EmployeeFacesController : ControllerBase
         FaceEnrollmentService enrollmentService,
         IFaceRecognizer recognizer,
         IVideoSource videoSource,
+        SystemSettingsService settings,
         ILogger<EmployeeFacesController> logger)
     {
         this.dbContext = dbContext;
         this.enrollmentService = enrollmentService;
         this.recognizer = recognizer;
         this.videoSource = videoSource;
+        this.settings = settings;
         this.logger = logger;
     }
 
@@ -72,6 +77,105 @@ public class EmployeeFacesController : ControllerBase
             logger.LogError(ex, "{action} failed: {error}", nameof(GetFaces), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
+    }
+
+    /// <summary>
+    /// Checks every enrolled face of the employee, using the stored embeddings the recognizer matches against:
+    /// [{ faceId, verdict ("Good" | "Weak" | "CloseToOther" | "Unusable"), reasons[], sharpness, cutOffFraction,
+    ///    ownSimilarity (mean vs the employee's other active faces, null if none), closestOtherEmployee,
+    ///    closestOtherSimilarity }]. "Unusable" faces should be deleted; "CloseToOther" ones risk mix-ups.
+    /// </summary>
+    [HttpGet("audit")]
+    public async Task<IActionResult> AuditFaces(long employeeId, CancellationToken cancellation)
+    {
+        try
+        {
+            if (!await dbContext.Employees.AnyAsync(e => e.Id == employeeId, cancellation))
+                return NotFound(CallResult.Error("Employee not found"));
+
+            var all = await dbContext.FaceEmbeddings.AsNoTracking()
+                .Where(f => f.IsActive && f.Employee.IsActive)
+                .Select(f => new { f.Id, f.EmployeeId, EmployeeName = f.Employee.FullName, f.EmbeddingData, f.FaceImage })
+                .ToListAsync(cancellation);
+
+            var vectors = all.ToDictionary(f => f.Id, f => ToUnitVector(f.EmbeddingData));
+            var threshold = settings.Current.RecognitionThreshold;
+
+            var audit = all.Where(f => f.EmployeeId == employeeId).Select(f =>
+            {
+                var v = vectors[f.Id];
+                var own = all.Where(o => o.EmployeeId == employeeId && o.Id != f.Id).Select(o => Dot(v, vectors[o.Id])).ToList();
+                var closest = all.Where(o => o.EmployeeId != employeeId)
+                    .Select(o => (o.EmployeeName, Similarity: Dot(v, vectors[o.Id])))
+                    .DefaultIfEmpty((EmployeeName: (string?)null!, Similarity: 0f))
+                    .MaxBy(x => x.Similarity);
+
+                double sharpness = -1, cutOff = 0;
+                if (f.FaceImage is { Length: > 0 } && FaceImageHelper.DecodeToBgr(f.FaceImage) is { } img)
+                    (sharpness, cutOff) = FaceQuality.MeasureCrop(img.Bgr, img.Width, img.Height);
+
+                float? ownMean = own.Count > 0 ? own.Average() : null;
+                var reasons = new List<string>();
+                var verdict = "Good";
+
+                if (cutOff > 0.15 || (sharpness >= 0 && sharpness < 150) || (own.Count >= 2 && ownMean < 0.1f))
+                {
+                    verdict = "Unusable";
+                    if (cutOff > 0.15) reasons.Add($"{cutOff:P0} of the face is outside the picture");
+                    if (sharpness >= 0 && sharpness < 150) reasons.Add($"very blurry (sharpness {sharpness:F0})");
+                    if (own.Count >= 2 && ownMean < 0.1f) reasons.Add($"does not look like this employee's other faces (similarity {ownMean:F2})");
+                }
+                else if (closest.EmployeeName is not null && closest.Similarity >= threshold - 0.05f)
+                {
+                    verdict = "CloseToOther";
+                    reasons.Add($"close to {closest.EmployeeName} (similarity {closest.Similarity:F2}, match threshold {threshold:F2})");
+                }
+                else if (FaceQuality.CropProblem(cutOff, sharpness) is { } quality || (ownMean is { } m && m < 0.25f))
+                {
+                    verdict = "Weak";
+                    if (cutOff > FaceQuality.MaxEnrollmentCutOff) reasons.Add($"{cutOff:P0} of the face is outside the picture");
+                    if (sharpness >= 0 && sharpness < FaceQuality.MinEnrollmentSharpness) reasons.Add($"blurry (sharpness {sharpness:F0})");
+                    if (ownMean is { } mean && mean < 0.25f) reasons.Add($"weak resemblance to this employee's other faces (similarity {mean:F2})");
+                }
+
+                return new
+                {
+                    FaceId = f.Id,
+                    Verdict = verdict,
+                    Reasons = reasons,
+                    Sharpness = Math.Round(sharpness),
+                    CutOffFraction = Math.Round(cutOff, 3),
+                    OwnSimilarity = ownMean is { } om ? Math.Round(om, 3) : (double?)null,
+                    ClosestOtherEmployee = closest.EmployeeName,
+                    ClosestOtherSimilarity = Math.Round(closest.Similarity, 3),
+                };
+            }).ToList();
+
+            return Ok(CallResult.Ok(data: audit));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(AuditFaces), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    private static float[] ToUnitVector(byte[] bytes)
+    {
+        var v = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, v, 0, v.Length * sizeof(float));
+        var norm = MathF.Sqrt(v.Sum(x => x * x));
+        if (norm > 0)
+            for (int i = 0; i < v.Length; i++) v[i] /= norm;
+        return v;
+    }
+
+    private static float Dot(float[] a, float[] b)
+    {
+        if (a.Length != b.Length) return 0f;
+        float s = 0;
+        for (int i = 0; i < a.Length; i++) s += a[i] * b[i];
+        return s;
     }
 
     /// <summary>

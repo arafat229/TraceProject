@@ -449,6 +449,32 @@ public class SFaceRecognizer : IFaceRecognizer
     /// Find the best matching employee for a given embedding vector.
     /// Returns a match only if the best similarity exceeds the configured threshold.
     /// </summary>
+    public GalleryComparison CompareWithGallery(byte[] embedding, long employeeId)
+    {
+        var vector = ConvertBytesToFloatArray(embedding, SFaceEmbeddingDimension);
+        float? ownBest = null;
+        float otherBest = 0f;
+        long? otherId = null;
+
+        lock (cacheLock)
+        {
+            if (vector.Length == SFaceEmbeddingDimension)
+            {
+                foreach (var (id, list) in embeddingCache)
+                {
+                    var best = list.Count == 0 ? 0f : list.Max(e => ComputeCosineSimilarity(vector, e.EmbeddingVector));
+                    if (id == employeeId)
+                        ownBest = best;
+                    else if (best > otherBest)
+                        (otherBest, otherId) = (best, id);
+                }
+            }
+
+            var otherName = otherId is { } o && employeeNameCache.TryGetValue(o, out var name) ? name : null;
+            return new GalleryComparison(ownBest, otherId, otherName, otherBest, SimilarityThreshold);
+        }
+    }
+
     private RecognitionResult FindBestMatchAsync(float[] embeddingVector)
     {
         if (embeddingVector == null || embeddingVector.Length != SFaceEmbeddingDimension)

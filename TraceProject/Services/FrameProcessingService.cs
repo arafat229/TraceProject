@@ -30,6 +30,10 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
     private ulong totalFacesDetected = 0;
     private ulong totalFacesRecognized = 0;
     private ulong totalUnknownFaces = 0;
+    // Detected but not good enough to recognize (FaceQuality.RecognitionProblem)
+    private ulong totalFacesSkipped = 0;
+    private readonly Dictionary<string, int> skippedByReason = new();
+    private double totalMatchSimilarity = 0;
     private DateTime processingStartTime = DateTime.UtcNow;
     private DateTime lastUnknownLogTime = DateTime.MinValue;
     private CancellationTokenSource? processingTokenSource;
@@ -151,9 +155,15 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                     {
                         foreach (var face in detectedFaces)
                         {
-                            // Side profiles give unreliable embeddings: don't recognize them at all
-                            if (!face.IsFrontal)
+                            // Side profiles, weak detections (hands, fabric), tiny, cut-off or blurry faces give
+                            // unreliable embeddings: don't recognize them at all (see FaceQuality)
+                            if (face.RecognitionProblem is not null)
+                            {
+                                totalFacesSkipped++;
+                                var reason = face.RecognitionProblem.Split(" (")[0];
+                                skippedByReason[reason] = skippedByReason.GetValueOrDefault(reason) + 1;
                                 continue;
+                            }
 
                             try
                             {
@@ -204,7 +214,10 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                 }
 
                                 if (result.IsMatch)
+                                {
                                     totalFacesRecognized++;
+                                    totalMatchSimilarity += result.Confidence;
+                                }
                                 else
                                     totalUnknownFaces++;
                             }
@@ -278,6 +291,11 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
     /// <summary>
     /// Log periodic metrics about detection performance.
     /// </summary>
+    /// <summary>"12 (side profile 7, blurry 5)": faces not recognized, by FaceQuality reason. Same thread as the loop.</summary>
+    private string SkippedSummary() => totalFacesSkipped == 0
+        ? "0"
+        : $"{totalFacesSkipped} ({string.Join(", ", skippedByReason.OrderByDescending(r => r.Value).Select(r => $"{r.Key} {r.Value}"))})";
+
     private void LogMetrics()
     {
         try
@@ -305,23 +323,25 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
             ulong facesRecognized = totalFacesRecognized;
             ulong unknownFaces = totalUnknownFaces;
 
-            if (facesDetect > 0 && facesRecognized > 0)
+            if (facesDetect > 0 && facesRecognized + unknownFaces > 0)
             {
                 logger.LogInformation(
                     "Frame Processing Metrics: Processed={framesProcessed} | " +
                     "Detection: Total Faces={totalFaces}, Avg={avgFaces:F2}/frame, FPS={detectionFps:F2} | " +
-                    "Recognition: Recognized={recognized}, Unknown={unknown}, Avg Confidence={avgConfidence:F3} | " +
+                    "Recognition: Recognized={recognized}, Unknown={unknown}, Skipped (low quality)={skipped}, Avg Match Similarity={avgSimilarity:F3} | " +
                     "Latest Frame={latestFaces} faces",
-                    framesProc, facesDetect, avgFacesPerFrame, processingFps, facesInLatestFrame,
-                    facesRecognized, unknownFaces, (facesRecognized > 0 ? 0.75f : 0.0f)); // TODO: calc actual avg confidence
+                    framesProc, facesDetect, avgFacesPerFrame, processingFps,
+                    facesRecognized, unknownFaces, SkippedSummary(),
+                    facesRecognized > 0 ? totalMatchSimilarity / facesRecognized : 0.0,
+                    facesInLatestFrame);
             }
             else
             {
                 logger.LogInformation(
                     "Frame Processing Metrics: Processed={framesProcessed} | " +
                     "Total Faces={totalFaces} | Avg Faces/Frame={avgFaces:F2} | " +
-                    "Detection FPS={detectionFps:F2} | Latest Frame={latestFaces} faces",
-                    framesProc, facesDetect, avgFacesPerFrame, processingFps, facesInLatestFrame);
+                    "Detection FPS={detectionFps:F2} | Latest Frame={latestFaces} faces | Skipped (low quality)={skipped}",
+                    framesProc, facesDetect, avgFacesPerFrame, processingFps, facesInLatestFrame, SkippedSummary());
             }
         }
         catch (Exception ex)

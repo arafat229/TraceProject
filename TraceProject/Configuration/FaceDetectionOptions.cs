@@ -1,28 +1,28 @@
 namespace TraceProject.Configuration;
 
 /// <summary>
-/// Configuration for face detection (Phase 3).
-/// Bind from appsettings.json "FaceDetection" section.
-/// Controls model loading, confidence threshold, and detection behavior.
+/// Face detection settings, from the "FaceDetection" section. See Services/FaceDetection/FaceQuality.cs
+/// for how the recognition thresholds were chosen.
 /// </summary>
 public class FaceDetectionOptions
 {
-    /// <summary>
-    /// Path to the YuNet ONNX model file.
-    /// Can be relative to the application's working directory or absolute.
-    /// Example: "Models/FaceDetection/face_detection_yunet_2023mar.onnx"
-    /// The model file must be downloaded from:
-    /// https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-    /// </summary>
     public string ModelPath { get; set; } = "Models/FaceDetection/face_detection_yunet_2023mar.onnx";
 
-    /// <summary>
-    /// Confidence threshold for face detection (0.0 to 1.0).
-    /// Faces with confidence below this threshold are filtered out before returning.
-    /// Example: 0.6 = 60% confidence minimum.
-    /// Higher values (e.g., 0.7+) reduce false positives but may miss valid faces.
-    /// Lower values (e.g., 0.5-) may detect more faces but with more false positives.
-    /// Recommended range: 0.5 to 0.7.
-    /// </summary>
+    /// <summary>YuNet score above which a face is detected at all (counted, shown in metrics).</summary>
     public double ConfidenceThreshold { get; set; } = 0.6;
+
+    /// <summary>
+    /// Detections below this score are never recognized. Below ~0.85 YuNet also fires on hands
+    /// and fabric, and those can land close to an employee's embedding.
+    /// </summary>
+    public float MinRecognitionScore { get; set; } = 0.85f;
+
+    /// <summary>Smallest face side, in camera pixels, that is recognized.</summary>
+    public int MinRecognitionFaceSize { get; set; } = 60;
+
+    /// <summary>Largest share of the aligned face allowed outside the picture.</summary>
+    public double MaxCutOffFraction { get; set; } = 0.15;
+
+    /// <summary>Faces blurrier than this (variance of the Laplacian) are not recognized.</summary>
+    public double MinSharpness { get; set; } = 100;
 }

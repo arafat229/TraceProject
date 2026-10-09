@@ -50,4 +50,21 @@ public class DetectedFace
     /// Faces created from an existing crop (no landmarks) count as frontal.
     /// </summary>
     public bool IsFrontal { get; init; } = true;
+
+    /// <summary>
+    /// Share (0–1) of the aligned face that lies outside the camera picture (filled with black),
+    /// i.e. the face is cut off by the frame edge. 0 when unknown.
+    /// </summary>
+    public double CutOffFraction { get; init; }
+
+    /// <summary>
+    /// Variance of the Laplacian of the aligned face (higher = sharper); see FaceQuality. Negative when unknown.
+    /// </summary>
+    public double Sharpness { get; init; } = -1;
+
+    /// <summary>
+    /// Why this face should not be recognized (side profile, low confidence, too small, cut off,
+    /// blurry), or null when it is good enough. Set by the detector from FaceDetectionOptions.
+    /// </summary>
+    public string? RecognitionProblem { get; set; }
 }
