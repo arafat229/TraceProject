@@ -135,6 +135,10 @@ PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Cl
 - Every `ReportIntervalSeconds`, `Uploader` posts finished sessions plus the open one to `POST /api/Agent/report`. The open one is resent each time with a growing `EndedAt`.
 - The server upserts by `(DeviceId, ClientId)` and **overwrites `EndedAt`**, which may move backwards because of the backdating. Don't change that to "max".
 - Unsent sessions persist in `%LOCALAPPDATA%\TraceAgent\pending.json`.
+- **Clock skew.** Times more than 2 minutes in the future are dropped, so `ActivityIngestionService.ClockOffset` shifts each report onto the server clock first:
+  - Agents 1.1.0+ send `SentAt`, which gives the exact offset.
+  - For older agents the newest `EndedAt` stands in for the agent's "now". That only catches a clock that runs ahead.
+  - A skew over 2 minutes logs a warning (`The clock on {device} is ... ahead of the server`). One laptop was 138 s ahead, and every session it sent was silently lost until this correction existed.
 - The agent fetches `IdleThresholdSeconds`, `ReportIntervalSeconds` and `CaptureWindowTitles` from `GET /api/Agent/me`, so the `ActivityMonitoring` section on the server controls every agent.
 
 **Server side.**

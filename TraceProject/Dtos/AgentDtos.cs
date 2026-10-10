@@ -38,8 +38,10 @@ public record AgentEventDto(Guid ClientId, AgentEventKind Kind, DateTime At);
 /// <summary>
 /// When the newest event in a report is UserExit, Shutdown or Sleep, the agent is stopping:
 /// the computer is shown Offline at once, with that reason.
+/// SentAt is the agent's clock when it sent the report (agent 1.1.0+); the server uses it to
+/// correct the report's times when that computer's clock is off.
 /// </summary>
-public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion, List<AgentEventDto>? Events = null);
+public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion, List<AgentEventDto>? Events = null, DateTime? SentAt = null);
 
 public record AgentEventViewDto(long Id, long DeviceId, string Kind, DateTime At);
 

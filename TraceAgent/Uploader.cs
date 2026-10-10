@@ -40,7 +40,8 @@ internal sealed class Uploader(ActivityTracker tracker)
                     events = tracker.PendingEvents.ToList();
                 }
 
-                await api.ReportAsync(new AgentReportDto(sessions, tracker.CurrentState, tracker.CurrentApp, AgentApi.Version, events), cancellation);
+                // SentAt lets the server correct for this computer's clock being off
+                await api.ReportAsync(new AgentReportDto(sessions, tracker.CurrentState, tracker.CurrentApp, AgentApi.Version, events, DateTime.UtcNow), cancellation);
 
                 // Sampling can close sessions or record events while the request was in flight; only drop what was sent
                 tracker.Pending.RemoveRange(0, batch.Count);

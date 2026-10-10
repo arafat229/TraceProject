@@ -32,9 +32,11 @@ public class ActivityIngestionService(
         if (!string.IsNullOrWhiteSpace(report.AgentVersion))
             device.AgentVersion = Truncate(report.AgentVersion, 50);
 
+        var offset = ClockOffset(device, report, now);
+
         var sessions = (report.Sessions ?? [])
             .Where(s => s.ClientId != Guid.Empty && s.State != ActivityState.Offline && Enum.IsDefined(s.State))
-            .Select(s => s with { StartedAt = s.StartedAt.ToUniversalTime(), EndedAt = s.EndedAt.ToUniversalTime() })
+            .Select(s => s with { StartedAt = s.StartedAt.ToUniversalTime() + offset, EndedAt = s.EndedAt.ToUniversalTime() + offset })
             .Where(s => s.EndedAt >= s.StartedAt && s.EndedAt <= now + AllowedClockSkew)
             // The open session can appear twice in one batch (e.g. after a retry); keep its latest copy
             .GroupBy(s => s.ClientId)
@@ -75,11 +77,12 @@ public class ActivityIngestionService(
             }
         }
 
-        var newEvents = await AddEventsAsync(deviceId, employeeId, report.Events, now, cancellation);
+        var events = report.Events?.Select(e => e with { At = e.At.ToUniversalTime() + offset }).ToList();
+        var newEvents = await AddEventsAsync(deviceId, employeeId, events, now, cancellation);
 
         // The newest event says whether the agent is stopping (closed, shutdown, sleep). Older events
         // queued while offline are history only: a later Started/Resumed means it is running again.
-        var latestEvent = (report.Events ?? [])
+        var latestEvent = (events ?? [])
             .Where(e => Enum.IsDefined(e.Kind) && e.Kind != AgentEventKind.ConnectionLost)
             .MaxBy(e => e.At);
         AgentEventKind? stopReason = latestEvent?.Kind is AgentEventKind.UserExit or AgentEventKind.Shutdown or AgentEventKind.Sleep
@@ -128,6 +131,46 @@ public class ActivityIngestionService(
 
         return sessions.Count;
     }
+
+    /// <summary>
+    /// How far to shift the report's times so they match the server clock. Without this, a laptop
+    /// whose clock runs ahead has every session dropped as "in the future". Agents 1.1.0+ send their
+    /// clock (SentAt), which gives the exact offset. For older agents the open session ends at the
+    /// agent's "now", so a report ending in the future is pulled back to end now; a clock that is
+    /// behind can't be detected that way and is left alone.
+    /// </summary>
+    private TimeSpan ClockOffset(Device device, AgentReportDto report, DateTime now)
+    {
+        TimeSpan offset;
+        if (report.SentAt is { } sentAt)
+        {
+            offset = now - sentAt.ToUniversalTime();
+            if (offset.Duration() < MinClockCorrection)
+                return TimeSpan.Zero;
+        }
+        else
+        {
+            var latest = (report.Sessions ?? []).Select(s => s.EndedAt.ToUniversalTime())
+                .Concat((report.Events ?? []).Select(e => e.At.ToUniversalTime()))
+                .DefaultIfEmpty(now)
+                .Max();
+            if (latest <= now + AllowedClockSkew)
+                return TimeSpan.Zero;
+            offset = now - latest;
+        }
+
+        if (offset.Duration() > AllowedClockSkew && SkewWarnedAt.GetValueOrDefault(device.Id) < now - TimeSpan.FromMinutes(10))
+        {
+            SkewWarnedAt[device.Id] = now;
+            logger.LogWarning("The clock on {device} is {skew:F0} s {direction} the server; correcting its activity times",
+                device.Name, offset.Duration().TotalSeconds, offset < TimeSpan.Zero ? "ahead of" : "behind");
+        }
+        return offset;
+    }
+
+    // Network delay is well under this; smaller differences are not worth shifting for
+    private static readonly TimeSpan MinClockCorrection = TimeSpan.FromSeconds(5);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, DateTime> SkewWarnedAt = new();
 
     /// <summary>Stores the report's lifecycle events not seen before; returns the new ones.</summary>
     private async Task<List<AgentEvent>> AddEventsAsync(long deviceId, long employeeId, List<AgentEventDto>? events, DateTime now, CancellationToken cancellation)

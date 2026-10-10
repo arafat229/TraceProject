@@ -15,7 +15,7 @@ public record AgentConfigDto(long DeviceId, string DeviceName, string EmployeeNa
 public record AgentSessionDto(Guid ClientId, ActivityState State, string? AppName, string? WindowTitle, DateTime StartedAt, DateTime EndedAt);
 public enum AgentEventKind { Started = 0, UserExit = 1, Shutdown = 2, Sleep = 3, Resumed = 4 }
 public record AgentEventDto(Guid ClientId, AgentEventKind Kind, DateTime At);
-public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion, List<AgentEventDto>? Events = null);
+public record AgentReportDto(List<AgentSessionDto> Sessions, ActivityState CurrentState, string? CurrentApp, string? AgentVersion, List<AgentEventDto>? Events = null, DateTime? SentAt = null);
 
 /// <summary>The device token was revoked or the device deleted/disabled: the agent must pair again.</summary>
 public class UnpairedException(string message) : Exception(message);
