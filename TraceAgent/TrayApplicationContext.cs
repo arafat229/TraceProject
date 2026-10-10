@@ -38,6 +38,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Status…", null, (_, _) => ShowStatus());
+        menu.Items.Add("Pair again…", null, (_, _) => PairAgain());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ConfirmExit());
 
@@ -115,7 +116,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// <summary>The administrator removed or re-paired this device: stop and ask for a new code.</summary>
     private void HandleUnpaired()
     {
-        if (shutDown || !sampleTimer.Enabled)
+        // An open "Pair again" window already asks for a code; the next report retries after it
+        if (shutDown || !sampleTimer.Enabled || pairAgainOpen)
             return;
 
         sampleTimer.Stop();
@@ -137,15 +139,48 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        api.Dispose();
-        api = new AgentApi(settings.ServerUrl!, settings.GetToken());
-        configLoaded = false;
-        configTimer.Interval = 60_000;
+        Reconnect();
         Tracker.RecordEvent(AgentEventKind.Started);
         Tracker.Sample();
         sampleTimer.Start();
         uploadTimer.Start();
         configTimer.Start();
+    }
+
+    /// <summary>
+    /// Enter a new server address or pairing code by hand. Needed when the server moved (another
+    /// network or IP address): the agent then never reaches it, so it is never told to pair again.
+    /// Cancelling keeps the current pairing; what is queued is sent to the new server.
+    /// </summary>
+    private bool pairAgainOpen;
+
+    private void PairAgain()
+    {
+        if (pairAgainOpen)
+            return;
+        pairAgainOpen = true;
+        try
+        {
+            using var pairForm = new PairForm(settings);
+            if (pairForm.ShowDialog() != DialogResult.OK)
+                return;
+        }
+        finally
+        {
+            pairAgainOpen = false;
+        }
+
+        Reconnect();
+        _ = UploadAsync();
+    }
+
+    /// <summary>Talks to the server and token now in the settings.</summary>
+    private void Reconnect()
+    {
+        api.Dispose();
+        api = new AgentApi(settings.ServerUrl!, settings.GetToken());
+        configLoaded = false;
+        configTimer.Interval = 60_000;
         _ = LoadConfigAsync();
     }
 

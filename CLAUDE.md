@@ -119,6 +119,8 @@ PostgreSQL `timestamptz` columns reject `DateTime` values without a timezone. Cl
 2. On the laptop, the agent's first-run `PairForm` sends the code to `POST /api/Agent/pair` and receives a device token.
 3. The server stores only the token's SHA-256 hash (`Device.TokenHash`). The agent stores the token DPAPI-encrypted in `%LOCALAPPDATA%\TraceAgent\settings.json` and adds itself to the HKCU `Run` key.
 
+The tray menu's **Pair again…** opens the same form by hand. This is the only way to change the server address: an agent that can't reach its server (the server changed network or IP) is never told to re-pair.
+
 `POST /api/Devices/{id}/pairing-code` issues a new code and **revokes the current token**. Deleting the device also cuts the agent off: on a 401 the agent clears its token and shows the pair form again. A **disabled** device still authenticates, but `POST /api/Agent/report` answers 403. The agent keeps its token, drops what it recorded and shows "paused", then resumes by itself once the device is re-enabled. Idle time is never dated back before the agent started sampling (at agent start or wake from sleep).
 
 **Two auth schemes.** `AgentController` accepts only `Authorization: Device <token>` (`Services/DeviceTokenAuthentication.cs`, scheme `DeviceTokenAuthenticationHandler.SchemeName` = "DeviceToken"). JWT stays the default for every other controller. Neither token works on the other side.
