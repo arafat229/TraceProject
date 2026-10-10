@@ -23,7 +23,26 @@ public class ActivityIngestionService(
     // Agent and server clocks can disagree a little; anything further in the future is dropped
     private static readonly TimeSpan AllowedClockSkew = TimeSpan.FromMinutes(2);
 
+    // One report at a time per device. When the agent times out and resends, the retry can arrive
+    // while the first copy is still saving; both would insert the same new sessions, and the second
+    // failed on the (DeviceId, ClientId) unique index. Now the retry waits, then updates those rows.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, SemaphoreSlim> DeviceLocks = new();
+
     public async Task<int> IngestAsync(long deviceId, long employeeId, AgentReportDto report, CancellationToken cancellation)
+    {
+        var gate = DeviceLocks.GetOrAdd(deviceId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellation);
+        try
+        {
+            return await IngestCoreAsync(deviceId, employeeId, report, cancellation);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<int> IngestCoreAsync(long deviceId, long employeeId, AgentReportDto report, CancellationToken cancellation)
     {
         var now = DateTime.UtcNow;
 

@@ -11,10 +11,18 @@ internal static class Program
     {
         // One agent per Windows user session
         using var mutex = new Mutex(true, @"Local\TraceAgent.SingleInstance", out var isFirstInstance);
-        if (!isFirstInstance)
-            return;
-
         ApplicationConfiguration.Initialize();
+
+        if (!isFirstInstance)
+        {
+            // Quitting silently looked like the new exe "doing nothing" when the old one was still running
+            MessageBox.Show(
+                "TraceAgent is already running on this computer.\n\n" +
+                "Its icon is in the taskbar notification area (click ^ at the bottom right). " +
+                "To update TraceAgent, right-click that icon, choose Exit, then start the new version.",
+                "TraceAgent", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
         var settings = AgentSettings.Load();
         if (!settings.IsPaired || settings.GetToken() is null)
