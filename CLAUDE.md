@@ -68,6 +68,9 @@ Other laptops reach the API only if Windows Firewall on the server allows inboun
 **Video → recognition → attendance pipeline.** Background services, all wired in `Program.cs`, each built in its own "phase":
 
 1. `Workers/CameraCaptureWorker`, with `CameraConnectionManager` (reconnect/backoff, from `Connection` options), drives `IVideoSource` = `Services/VideoSources/RtspVideoSource` (LibVLCSharp). LibVLC memory-rendering callbacks decode frames as **BGRA**, capped at 1280 px wide and 15 fps, and only the latest frame is kept. It does nothing when `Camera:Enabled` is false or `Camera:Password` is empty.
+   - **One `LibVLC` engine and one `MediaPlayer` live for the whole process.** A reconnect only stops the player and gives it a new `Media`. Disposing and recreating the engine on every retry made LibVLC `abort()` the process (exit code 3, nothing logged) after an hour or so against an unreachable camera.
+   - LibVLC's own messages go through `OnLibVlcLog`, with the login masked. Its default console output printed the camera username and password inside the stream address.
+   - After `Connection:OutageAfterAttempts` failures in a row (20, about 10 minutes), retries slow to every `OutageReconnectDelaySeconds` (120).
 2. `Services/FrameProcessingService`, a singleton `BackgroundService` that is also exposed as `IFrameProcessingService`, polls `GetLatestFrame()` at `TargetProcessingFps`, resizes the frame, and runs:
    - `IFaceDetector` → `YuNetFaceDetector` (`FaceDetectorYN`, ONNX model in `Models/FaceDetection/`)
    - `IFaceRecognizer` → `SFaceRecognizer` (`Models/FaceRecognition/`), matching against an in-memory cache of `FaceEmbeddings`. It refreshes the cache through its own DI scope, both after enrollment changes and every `EmbeddingCacheRefreshSeconds`, and reads its threshold from `SystemSettingsService`.

@@ -36,4 +36,16 @@ public class ConnectionOptions
     /// If connection doesn't complete within this time, it's considered failed.
     /// </summary>
     public int ConnectTimeoutMs { get; set; } = 10000;
+
+    /// <summary>
+    /// After this many failed attempts in a row (about 10 minutes at the 30 s cap), the camera is
+    /// treated as off rather than glitching, and retries slow to OutageReconnectDelaySeconds.
+    /// </summary>
+    public int OutageAfterAttempts { get; set; } = 20;
+
+    /// <summary>
+    /// Delay between attempts during a long outage. Also how long a camera that comes back can
+    /// wait before it is picked up again.
+    /// </summary>
+    public int OutageReconnectDelaySeconds { get; set; } = 120;
 }

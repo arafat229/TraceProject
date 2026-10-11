@@ -228,11 +228,19 @@ public class CameraConnectionManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Calculate exponential backoff delay with maximum cap.
+    /// Calculate exponential backoff delay with maximum cap, then a slower fixed delay during a long outage.
     /// Formula: min(initialDelay * (multiplier ^ (attempts - 1)), maxDelay)
     /// </summary>
     private int CalculateBackoffDelay(int attemptNumber)
     {
+        if (connectionOptions.OutageAfterAttempts > 0 && attemptNumber > connectionOptions.OutageAfterAttempts)
+        {
+            if (attemptNumber == connectionOptions.OutageAfterAttempts + 1)
+                logger.LogWarning("Camera unreachable for {Attempts} attempts; retrying every {Seconds}s from now on",
+                    connectionOptions.OutageAfterAttempts, connectionOptions.OutageReconnectDelaySeconds);
+            return connectionOptions.OutageReconnectDelaySeconds * 1000;
+        }
+
         var baseDelayMs = connectionOptions.ReconnectDelaySeconds * 1000;
         var maxDelayMs = connectionOptions.MaxReconnectDelaySeconds * 1000;
         var multiplier = connectionOptions.BackoffMultiplier;

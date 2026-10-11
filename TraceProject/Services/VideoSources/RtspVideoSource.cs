@@ -110,9 +110,9 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
         {
             if (isRunning)
             {
-                // A reconnect after the stream dropped: throw away the old player and start fresh
+                // A reconnect after the stream dropped: stop the player, keep it and the LibVLC engine
                 logger.LogInformation("Restarting RTSP video source");
-                ReleasePlayer();
+                StopPlayback();
             }
 
             logger.LogInformation("Starting RTSP video source at {sanitizedUrl}", SanitizeUrl(rtspUrl));
@@ -121,32 +121,18 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
             metricsService.Reset();
             hasSeenFirstFrame = false;
 
-            // Initialize LibVLC (only needed once per process, but safe to call multiple times)
-            Core.Initialize();
-            libVlc = new LibVLC(enableDebugLogs: false);
+            EnsurePlayer();
 
-            // Create media object
-            media = new Media(libVlc, rtspUrl, FromType.FromLocation);
+            // A new Media per attempt is cheap; the engine and the player are reused
+            media?.Dispose();
+            media = new Media(libVlc!, rtspUrl, FromType.FromLocation);
 
             // Configure RTSP options for TCP transport and low latency
             media.AddOption(":rtsp-tcp=yes");  // Use TCP instead of UDP
             media.AddOption(":network-caching=500");  // Reduce latency
             media.AddOption(":live-caching=500");
 
-            // Create media player
-            mediaPlayer = new MediaPlayer(media);
-
-            // Attach event handlers
-            mediaPlayer.Playing += OnMediaPlayerPlaying;
-            mediaPlayer.Stopped += OnMediaPlayerStopped;
-            mediaPlayer.EncounteredError += OnMediaPlayerError;
-
-            // Decode frames into our own memory buffer (BGRA) instead of a window.
-            // Must be set before Play().
-            mediaPlayer.SetVideoFormatCallbacks(videoFormatCallback, videoCleanupCallback);
-            mediaPlayer.SetVideoCallbacks(videoLockCallback, null, videoDisplayCallback);
-
-            // Start playback
+            mediaPlayer!.Media = media;
             mediaPlayer.Play();
 
             isRunning = true;
@@ -164,6 +150,48 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
             logger.LogError(ex, "Error starting RTSP video source");
             UpdateConnectionStatus(CameraConnectionStatus.Error);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Creates the LibVLC engine and the media player on first use and keeps them for the life of
+    /// this source. Disposing and recreating the engine on every reconnect made LibVLC abort() the
+    /// whole process (exit code 3) after an hour or so of retries against an unreachable camera.
+    /// </summary>
+    private void EnsurePlayer()
+    {
+        if (mediaPlayer != null)
+            return;
+
+        Core.Initialize();
+        libVlc = new LibVLC(enableDebugLogs: false);
+        // Subscribing replaces LibVLC's own console output, which printed the camera login in the
+        // stream address. Its messages go through OnLibVlcLog instead, with the login masked.
+        libVlc.Log += OnLibVlcLog;
+
+        mediaPlayer = new MediaPlayer(libVlc);
+        mediaPlayer.Playing += OnMediaPlayerPlaying;
+        mediaPlayer.Stopped += OnMediaPlayerStopped;
+        mediaPlayer.EncounteredError += OnMediaPlayerError;
+
+        // Decode frames into our own memory buffer (BGRA) instead of a window. Must be set before Play().
+        mediaPlayer.SetVideoFormatCallbacks(videoFormatCallback, videoCleanupCallback);
+        mediaPlayer.SetVideoCallbacks(videoLockCallback, null, videoDisplayCallback);
+    }
+
+    private void OnLibVlcLog(object? sender, LogEventArgs e)
+    {
+        try
+        {
+            // Errors repeat on every failed reconnect; keep them visible but out of the error count
+            if (e.Level == LibVLCSharp.Shared.LogLevel.Error)
+                logger.LogWarning("LibVLC {module}: {message}", e.Module, SanitizeUrl(e.Message));
+            else if (e.Level == LibVLCSharp.Shared.LogLevel.Warning)
+                logger.LogDebug("LibVLC {module}: {message}", e.Module, SanitizeUrl(e.Message));
+        }
+        catch
+        {
+            // Never let an exception escape into native LibVLC code
         }
     }
 
@@ -366,13 +394,10 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
     }
 
     /// <summary>
-    /// Stops the video source and releases resources.
+    /// Stops playback before reconnecting, keeping the player and the engine. Its Stopped event is
+    /// muted meanwhile so the reconnect it is part of doesn't schedule another one.
     /// </summary>
-    /// <summary>
-    /// Stops and disposes the current LibVLC player without raising status events
-    /// (used before reconnecting).
-    /// </summary>
-    private void ReleasePlayer()
+    private void StopPlayback()
     {
         try
         {
@@ -382,28 +407,25 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
 
             if (mediaPlayer != null)
             {
-                mediaPlayer.Playing -= OnMediaPlayerPlaying;
                 mediaPlayer.Stopped -= OnMediaPlayerStopped;
-                mediaPlayer.EncounteredError -= OnMediaPlayerError;
+                // Synchronous: LibVLC has finished with the frame buffer (cleanup callback) when it returns
                 mediaPlayer.Stop();
-                mediaPlayer.Dispose();
-                mediaPlayer = null;
+                mediaPlayer.Stopped += OnMediaPlayerStopped;
             }
-
-            media?.Dispose();
-            media = null;
-            libVlc?.Dispose();
-            libVlc = null;
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Error releasing the previous LibVLC player");
+            logger.LogWarning(ex, "Error stopping the previous LibVLC stream");
         }
         finally
         {
             isRunning = false;
         }
     }
+
+    /// <summary>
+    /// Stops the video source; the player and engine are released in DisposeAsync.
+    /// </summary>
 
     public async Task StopAsync()
     {
@@ -422,6 +444,10 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
                 mediaPlayer.Stopped -= OnMediaPlayerStopped;
                 mediaPlayer.EncounteredError -= OnMediaPlayerError;
                 mediaPlayer.Stop();
+                // A later StartAsync (StopAsync then StartAsync) reuses the player, so re-attach
+                mediaPlayer.Playing += OnMediaPlayerPlaying;
+                mediaPlayer.Stopped += OnMediaPlayerStopped;
+                mediaPlayer.EncounteredError += OnMediaPlayerError;
             }
 
             isRunning = false;
@@ -524,8 +550,13 @@ public class RtspVideoSource : IVideoSource, IAsyncDisposable
             await StopAsync();
 
             mediaPlayer?.Dispose();
+            mediaPlayer = null;
             media?.Dispose();
+            media = null;
+            if (libVlc != null)
+                libVlc.Log -= OnLibVlcLog;
             libVlc?.Dispose();
+            libVlc = null;
 
             logger.LogInformation("RtspVideoSource disposed");
         }
