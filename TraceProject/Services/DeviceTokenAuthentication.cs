@@ -33,10 +33,19 @@ public class DeviceTokenAuthenticationHandler(
             return AuthenticateResult.NoResult();
 
         var hash = DeviceTokens.Hash(header[prefix.Length..].Trim());
-        var device = await dbContext.Devices.AsNoTracking()
-            .Where(d => d.TokenHash == hash)
-            .Select(d => new { d.Id, d.EmployeeId, d.IsActive })
-            .FirstOrDefaultAsync(Context.RequestAborted);
+        DeviceInfo? device;
+        try
+        {
+            device = await dbContext.Devices.AsNoTracking()
+                .Where(d => d.TokenHash == hash)
+                .Select(d => new DeviceInfo(d.Id, d.EmployeeId, d.IsActive))
+                .FirstOrDefaultAsync(Context.RequestAborted);
+        }
+        catch (OperationCanceledException) when (Context.RequestAborted.IsCancellationRequested)
+        {
+            // The agent gave up on the request (its timeout, exit or sleep): nobody is waiting for an answer
+            return AuthenticateResult.NoResult();
+        }
 
         if (device is null)
             return AuthenticateResult.Fail("Unknown device token");
@@ -52,6 +61,8 @@ public class DeviceTokenAuthenticationHandler(
 
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }
+
+    private sealed record DeviceInfo(long Id, long EmployeeId, bool IsActive);
 }
 
 public static class DeviceTokens

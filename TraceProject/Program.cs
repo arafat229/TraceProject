@@ -342,6 +342,21 @@ try
 
     });
 
+    // The browser abandoned the request (page change, refresh, closed live view) and the work for it
+    // was cancelled: nothing went wrong, so answer 499 instead of logging an OperationCanceledException
+    app.Use(async (context, next) =>
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            if (!context.Response.HasStarted)
+                context.Response.StatusCode = StatusCodes.Status499ClientClosedRequest;
+        }
+    });
+
     //// run migrations and seed data
     using (var scope = app.Services.CreateScope())
     {
@@ -421,8 +436,11 @@ try
 
     app.UseRouting();
 
+    // In development, also any localhost port: Vite moves to 5174, 5175... when 5173 is taken
+    var allowAnyLocalhost = app.Environment.IsDevelopment();
     app.UseCors(x => x
-     .WithOrigins(allowedOrigins)
+     .SetIsOriginAllowed(origin => allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase)
+         || (allowAnyLocalhost && Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.IsLoopback))
      .AllowAnyMethod()
      .AllowAnyHeader()
      .AllowCredentials());
