@@ -74,3 +74,13 @@ public record PresenceRangeDto(
     int WorkingDays,
     List<PresenceEmployeeRangeDto> Employees,
     List<PresenceDayTotalsDto> Days);
+
+/// <summary>One employee over a period, day by day (GET /api/Presence/employee/{id}).</summary>
+public record PresenceEmployeeReportDto(
+    DateOnly From,
+    DateOnly To,
+    int WorkingDays,
+    PresenceEmployeeRangeDto Summary,
+    List<PresenceDayDto> Days,
+    // Active computer time per application over the whole period
+    List<AppUsageDto> TopApps);

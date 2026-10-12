@@ -75,36 +75,16 @@ public class PresenceService(ApplicationDbContext dbContext, SystemSettingsServi
     /// </summary>
     public async Task<PresenceRangeDto> GetRangeAsync(DateOnly from, DateOnly to, CancellationToken cancellation = default)
     {
-        var lastDay = to > WorkDay.Today ? WorkDay.Today : to;
-        var days = new List<DateOnly>();
-        for (var d = from; d <= lastDay; d = d.AddDays(1))
-            days.Add(d);
+        var days = DaysOf(from, to);
+        var lastDay = days[^1];
 
         var data = await LoadRangeAsync(from, lastDay, cancellation);
         var grid = data.Employees.ToDictionary(e => e.Id, e => days.Select(d => BuildDay(data, e, d)).ToList());
 
-        var employees = data.Employees.Select(e =>
-        {
-            var rows = grid[e.Id];
-            int Count(PresenceOutcome o) => rows.Count(r => r.Outcome == o.ToString());
-            var checkIns = rows.Where(r => r.CheckIn is not null).Select(r => r.CheckIn!.Value.ToLocalTime().TimeOfDay.TotalMinutes).ToList();
-
-            return new PresenceEmployeeRangeDto(
-                e.Id, e.FullName, e.Department,
-                Count(PresenceOutcome.Verified),
-                Count(PresenceOutcome.PresentNoComputer),
-                Count(PresenceOutcome.UnverifiedComputerUse),
-                rows.Count(r => r.Outcome == nameof(PresenceOutcome.Absent) && IsWorkingDay(r.Date)),
-                rows.Count(r => r.IsLate),
-                checkIns.Count > 0 ? TimeSpan.FromMinutes(checkIns.Average()).ToString(@"hh\:mm") : null,
-                rows.Sum(r => r.ActiveSeconds),
-                rows.Sum(r => r.IdleSeconds),
-                rows.Sum(r => r.LockedSeconds),
-                rows.Sum(r => r.VerifiedActiveSeconds),
-                rows.Sum(r => r.AgentClosedByUser));
-        })
-        .OrderBy(e => e.EmployeeName)
-        .ToList();
+        var employees = data.Employees
+            .Select(e => Summarize(e, grid[e.Id]))
+            .OrderBy(e => e.EmployeeName)
+            .ToList();
 
         var totals = days.Select((d, i) =>
         {
@@ -121,6 +101,65 @@ public class PresenceService(ApplicationDbContext dbContext, SystemSettingsServi
         }).ToList();
 
         return new PresenceRangeDto(from, lastDay, days.Count(IsWorkingDay), employees, totals);
+    }
+
+    /// <summary>
+    /// One employee over [from, to], day by day, with the same totals as the range report plus the apps
+    /// they were active in. Works for inactive employees too. Null when the employee does not exist.
+    /// </summary>
+    public async Task<PresenceEmployeeReportDto?> GetEmployeeReportAsync(long employeeId, DateOnly from, DateOnly to, CancellationToken cancellation = default)
+    {
+        var days = DaysOf(from, to);
+        var lastDay = days[^1];
+
+        var data = await LoadRangeAsync(from, lastDay, cancellation, employeeId);
+        if (data.Employees.SingleOrDefault() is not { } employee)
+            return null;
+
+        var rows = days.Select(d => BuildDay(data, employee, d)).ToList();
+
+        var appSessions = await dbContext.ActivitySessions.AsNoTracking()
+            .Where(s => s.EmployeeId == employeeId && s.WorkDate >= from && s.WorkDate <= lastDay && s.State == ActivityState.Active)
+            .Select(s => new { s.AppName, s.StartedAt, s.EndedAt })
+            .ToListAsync(cancellation);
+        var topApps = appSessions
+            .GroupBy(s => s.AppName ?? "Unknown")
+            .Select(g => new AppUsageDto(g.Key, g.Sum(s => (s.EndedAt - s.StartedAt).TotalSeconds)))
+            .OrderByDescending(a => a.Seconds)
+            .Take(10)
+            .ToList();
+
+        return new PresenceEmployeeReportDto(from, lastDay, days.Count(IsWorkingDay), Summarize(employee, rows), rows, topApps);
+    }
+
+    /// <summary>The days of [from, to] up to today. The caller makes sure <paramref name="from"/> is not after today.</summary>
+    private static List<DateOnly> DaysOf(DateOnly from, DateOnly to)
+    {
+        var lastDay = to > WorkDay.Today ? WorkDay.Today : to;
+        var days = new List<DateOnly>();
+        for (var d = from; d <= lastDay; d = d.AddDays(1))
+            days.Add(d);
+        return days;
+    }
+
+    private static PresenceEmployeeRangeDto Summarize(EmployeeRow e, List<PresenceDayDto> rows)
+    {
+        int Count(PresenceOutcome o) => rows.Count(r => r.Outcome == o.ToString());
+        var checkIns = rows.Where(r => r.CheckIn is not null).Select(r => r.CheckIn!.Value.ToLocalTime().TimeOfDay.TotalMinutes).ToList();
+
+        return new PresenceEmployeeRangeDto(
+            e.Id, e.FullName, e.Department,
+            Count(PresenceOutcome.Verified),
+            Count(PresenceOutcome.PresentNoComputer),
+            Count(PresenceOutcome.UnverifiedComputerUse),
+            rows.Count(r => r.Outcome == nameof(PresenceOutcome.Absent) && IsWorkingDay(r.Date)),
+            rows.Count(r => r.IsLate),
+            checkIns.Count > 0 ? TimeSpan.FromMinutes(checkIns.Average()).ToString(@"hh\:mm") : null,
+            rows.Sum(r => r.ActiveSeconds),
+            rows.Sum(r => r.IdleSeconds),
+            rows.Sum(r => r.LockedSeconds),
+            rows.Sum(r => r.VerifiedActiveSeconds),
+            rows.Sum(r => r.AgentClosedByUser));
     }
 
     private PresenceDayDto BuildDay(RangeData data, EmployeeRow e, DateOnly day)
@@ -163,25 +202,28 @@ public class PresenceService(ApplicationDbContext dbContext, SystemSettingsServi
         return checkInUtc.ToLocalTime().TimeOfDay > limit;
     }
 
-    private async Task<RangeData> LoadRangeAsync(DateOnly from, DateOnly to, CancellationToken cancellation)
+    /// <summary>
+    /// Every active employee, or only <paramref name="employeeId"/> (active or not), with their data over [from, to].
+    /// </summary>
+    private async Task<RangeData> LoadRangeAsync(DateOnly from, DateOnly to, CancellationToken cancellation, long? employeeId = null)
     {
         var employees = await dbContext.Employees.AsNoTracking()
-            .Where(e => e.IsActive)
+            .Where(e => employeeId == null ? e.IsActive : e.Id == employeeId)
             .Select(e => new EmployeeRow(e.Id, e.FullName, e.Department.Name))
             .ToListAsync(cancellation);
 
         var attendance = await dbContext.Attendances.AsNoTracking()
-            .Where(a => a.WorkDate >= from && a.WorkDate <= to)
+            .Where(a => a.WorkDate >= from && a.WorkDate <= to && (employeeId == null || a.EmployeeId == employeeId))
             .Select(a => new AttendanceRow(a.EmployeeId, a.WorkDate, a.CheckIn, a.CheckOut, a.Location.Place))
             .ToListAsync(cancellation);
 
         var sessions = await dbContext.ActivitySessions.AsNoTracking()
-            .Where(s => s.WorkDate >= from && s.WorkDate <= to)
+            .Where(s => s.WorkDate >= from && s.WorkDate <= to && (employeeId == null || s.EmployeeId == employeeId))
             .Select(s => new SessionRow(s.EmployeeId, s.WorkDate, s.State, s.StartedAt, s.EndedAt))
             .ToListAsync(cancellation);
 
         var userExits = await dbContext.AgentEvents.AsNoTracking()
-            .Where(e => e.Kind == AgentEventKind.UserExit && e.WorkDate >= from && e.WorkDate <= to)
+            .Where(e => e.Kind == AgentEventKind.UserExit && e.WorkDate >= from && e.WorkDate <= to && (employeeId == null || e.EmployeeId == employeeId))
             .GroupBy(e => new { e.EmployeeId, e.WorkDate })
             .Select(g => new { g.Key.EmployeeId, g.Key.WorkDate, Count = g.Count() })
             .ToListAsync(cancellation);

@@ -65,12 +65,8 @@ public class PresenceController : ControllerBase
     {
         try
         {
-            if (to < from)
-                return BadRequest(CallResult.Error("'to' must not be before 'from'"));
-            if (to.DayNumber - from.DayNumber + 1 > PresenceService.MaxRangeDays)
-                return BadRequest(CallResult.Error($"A report covers at most {PresenceService.MaxRangeDays} days"));
-            if (from > WorkDay.Today)
-                return BadRequest(CallResult.Error("The period starts in the future"));
+            if (RangeError(from, to) is { } error)
+                return BadRequest(CallResult.Error(error));
 
             return Ok(CallResult.Ok(data: await presence.GetRangeAsync(from, to, cancellation)));
         }
@@ -79,5 +75,40 @@ public class PresenceController : ControllerBase
             logger.LogError(ex, "{action} failed: {error}", nameof(GetRange), ex.GetFullErrorMessage());
             return BadRequest(CallResult.Error(ex));
         }
+    }
+
+    /// <summary>
+    /// One employee's report over [from, to] (yyyy-MM-dd, at most 93 days): totals, every day of the
+    /// period, and the apps they were active in. Days after today are left out.
+    /// </summary>
+    [HttpGet("employee/{employeeId}")]
+    public async Task<IActionResult> GetEmployeeReport(long employeeId, [FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellation)
+    {
+        try
+        {
+            if (RangeError(from, to) is { } error)
+                return BadRequest(CallResult.Error(error));
+
+            var report = await presence.GetEmployeeReportAsync(employeeId, from, to, cancellation);
+            return report is null
+                ? NotFound(CallResult.Error("Employee not found"))
+                : Ok(CallResult.Ok(data: report));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "{action} failed: {error}", nameof(GetEmployeeReport), ex.GetFullErrorMessage());
+            return BadRequest(CallResult.Error(ex));
+        }
+    }
+
+    private static string? RangeError(DateOnly from, DateOnly to)
+    {
+        if (to < from)
+            return "'to' must not be before 'from'";
+        if (to.DayNumber - from.DayNumber + 1 > PresenceService.MaxRangeDays)
+            return $"A report covers at most {PresenceService.MaxRangeDays} days";
+        if (from > WorkDay.Today)
+            return "The period starts in the future";
+        return null;
     }
 }
