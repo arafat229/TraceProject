@@ -17,7 +17,7 @@ namespace TraceProject.Models
     public enum ReportType { 
     
         Daily,
-        weekly,
+        Weekly,
         Monthly
     
     }

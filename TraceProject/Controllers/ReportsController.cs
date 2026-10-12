@@ -96,7 +96,7 @@ public class ReportsController : ControllerBase
                     r.Id, 
                     r.EmployeeId, 
                     EmployeeName = dbContext.Employees.FirstOrDefault(e => e.Id == r.EmployeeId)!.FullName,
-                    r.ReportType, 
+                    ReportType = r.ReportType.ToString(),
                     r.GeneratedAt, 
                     r.StartDate, 
                     r.EndDate 
@@ -186,7 +186,7 @@ public class ReportsController : ControllerBase
                     r.Id, 
                     r.EmployeeId, 
                     Employee = employee.FullName,
-                    r.ReportType, 
+                    ReportType = r.ReportType.ToString(),
                     r.GeneratedAt, 
                     r.StartDate, 
                     r.EndDate 
@@ -222,7 +222,7 @@ public class ReportsController : ControllerBase
                     r.EmployeeId, 
                     EmployeeName = dbContext.Employees.FirstOrDefault(e => e.Id == r.EmployeeId)!.FullName,
                     Department = department.Name,
-                    r.ReportType, 
+                    ReportType = r.ReportType.ToString(),
                     r.GeneratedAt, 
                     r.StartDate, 
                     r.EndDate 
@@ -254,7 +254,7 @@ public class ReportsController : ControllerBase
                     r.Id, 
                     r.EmployeeId, 
                     EmployeeName = dbContext.Employees.FirstOrDefault(e => e.Id == r.EmployeeId)!.FullName,
-                    r.ReportType, 
+                    ReportType = r.ReportType.ToString(),
                     r.GeneratedAt, 
                     r.StartDate, 
                     r.EndDate 
@@ -286,7 +286,7 @@ public class ReportsController : ControllerBase
                     r.Id, 
                     r.EmployeeId, 
                     EmployeeName = dbContext.Employees.FirstOrDefault(e => e.Id == r.EmployeeId)!.FullName,
-                    r.ReportType, 
+                    ReportType = r.ReportType.ToString(),
                     r.GeneratedAt, 
                     r.StartDate, 
                     r.EndDate 
