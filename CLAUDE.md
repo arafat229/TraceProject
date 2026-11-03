@@ -50,6 +50,7 @@ dotnet publish TraceAgent -c Release -r win-x64 --self-contained -p:PublishSingl
 Other laptops reach the API only if Windows Firewall on the server allows inbound TCP 5297.
 
 - Swagger UI is at `/swagger`. `TraceProject.http` holds sample requests.
+- Logs go to the console and to `TraceProject/logs/trace-yyyyMMdd.log` (one file per day, kept for 30 days, git-ignored).
 - Startup runs `Database.Migrate()` and `SeedData.Initialize`, which seeds `admin@trace.com` / `P@ssw0rd` when the Users table is empty. A failed DB connection is logged, and the app keeps running.
 - The Dockerfile and `DockerDefaultTargetOS` target **Windows**, because of the `OpenCvSharp4.runtime.win` and `VideoLAN.LibVLC.Windows` native packages.
 
@@ -77,7 +78,7 @@ Other laptops reach the API only if Windows Firewall on the server allows inboun
    - **Safeguards against misidentification:**
      - Side-profile faces (`DetectedFace.IsFrontal == false`, judged from the eye and nose landmarks) are not recognized, saved as unknown, or enrolled.
      - A match must beat the next-best employee by 0.06 (`AmbiguityMargin`); otherwise the result `IsAmbiguous` and is ignored.
-     - An employee must be matched 3 times within 3 s (`FrameProcessingService.IsConfirmedSighting`) before attendance is touched.
+     - Attendance is touched only for an employee a face is confirmed to be (`Services/FaceSightingTracker.cs`). It follows each face across frames by position. Confirming takes 4 matches in 4 s that are at least 60 % of that face's recognized frames and average similarity ≥ 0.50 (fixed, whatever the Settings threshold; set high on purpose, so people with old enrollments must re-enroll). A face already confirmed as one employee needs 8 matches to become another. Unmatched frames of a face that has matches are not saved as unknown. On 2026-10-29, three stray frames at 0.389 checked in the wrong employee under the older "3 matches in 3 s" rule.
    - on a match, `AttendancePersistenceService`, **per employee and per day** (unique index on `EmployeeId` + `WorkDate`, where `WorkDate` is the server-local date from `Services/WorkDay.cs`):
      - **Check-in** is the first recognition that day. It creates the row and broadcasts `EmployeeCheckedIn`.
      - **Check-out** is that employee's own last recognition that day. It is updated at most once a minute and broadcasts `AttendanceUpdated`.

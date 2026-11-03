@@ -63,23 +63,9 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
         this.configuredCameraId = cameraOptions?.Value?.Id;
     }
 
-    // An employee counts as "seen" only after RequiredMatches recognitions within ConfirmationWindow
-    private const int RequiredMatches = 3;
-    private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(3);
-    private readonly Dictionary<long, Queue<DateTime>> recentMatches = new();
-
-    private bool IsConfirmedSighting(long employeeId)
-    {
-        var now = DateTime.UtcNow;
-        if (!recentMatches.TryGetValue(employeeId, out var times))
-            recentMatches[employeeId] = times = new Queue<DateTime>();
-
-        times.Enqueue(now);
-        while (times.Count > 0 && now - times.Peek() > ConfirmationWindow)
-            times.Dequeue();
-
-        return times.Count >= RequiredMatches;
-    }
+    // Decides who each face is from its recent frames; single matches never touch attendance
+    private readonly FaceSightingTracker sightings = new();
+    private DateTime lastHeldLogTime = DateTime.MinValue;
 
     /// <summary>
     /// Start the frame processing loop (called by hosted service).
@@ -162,6 +148,7 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                 totalFacesSkipped++;
                                 var reason = face.RecognitionProblem.Split(" (")[0];
                                 skippedByReason[reason] = skippedByReason.GetValueOrDefault(reason) + 1;
+                                sightings.Touch(face.BoundingBox, DateTime.UtcNow);
                                 continue;
                             }
 
@@ -169,6 +156,13 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                             {
                                 var result = await faceRecognizer.RecognizeAsync(face, cancellationToken);
                                 recognitionResults.Add(result);
+
+                                var sighting = sightings.Observe(face.BoundingBox, result, DateTime.UtcNow);
+                                if (sighting.Held is not null && (DateTime.UtcNow - lastHeldLogTime).TotalSeconds > 10)
+                                {
+                                    logger.LogInformation("Sighting not confirmed: {reason}", sighting.Held);
+                                    lastHeldLogTime = DateTime.UtcNow;
+                                }
 
                                 // Close to two employees at once: ignore (neither attendance nor unknown)
                                 if (result.IsAmbiguous)
@@ -183,8 +177,8 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                         using var scope = scopeFactory.CreateScope();
                                         if (result.IsMatch)
                                         {
-                                            // Single-frame mistakes happen; only act on an employee seen consistently
-                                            if (IsConfirmedSighting(result.EmployeeId!.Value))
+                                            // Single-frame mistakes happen; only act on an employee this face is confirmed to be
+                                            if (sighting.ConfirmedEmployeeId == result.EmployeeId)
                                             {
                                                 var attendancePersistenceService = scope.ServiceProvider.GetRequiredService<IAttendancePersistenceService>();
                                                 await attendancePersistenceService.PersistRecognitionResultAsync(
@@ -194,7 +188,8 @@ public class FrameProcessingService : BackgroundService, IFrameProcessingService
                                                     cancellationToken);
                                             }
                                         }
-                                        else
+                                        // A bad frame of a known employee is not a stranger
+                                        else if (sighting.IsStranger)
                                         {
                                             var unknownFaceService = scope.ServiceProvider.GetRequiredService<UnknownFaceService>();
                                             await unknownFaceService.HandleUnknownFaceAsync(face, result, cancellationToken);

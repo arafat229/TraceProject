@@ -33,6 +33,11 @@ try
 
     builder.Host.UseSerilog((ctx, lc) => lc
    .WriteTo.Console()
+   // One file per day, kept for 30 days, so a past run can still be investigated
+   .WriteTo.File(
+       Path.Combine(ctx.HostingEnvironment.ContentRootPath, "logs", "trace-.log"),
+       rollingInterval: RollingInterval.Day,
+       retainedFileCountLimit: 30)
    .ReadFrom.Configuration(ctx.Configuration));
 
 
